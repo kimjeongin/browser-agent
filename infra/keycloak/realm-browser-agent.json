@@ -1,0 +1,71 @@
+{
+  "realm": "browser-agent",
+  "displayName": "Browser Agent",
+  "enabled": true,
+  "registrationAllowed": false,
+  "loginWithEmailAllowed": true,
+  "duplicateEmailsAllowed": false,
+  "resetPasswordAllowed": true,
+  "editUsernameAllowed": false,
+  "bruteForceProtected": true,
+  "clients": [
+    {
+      "clientId": "browser-agent-extension",
+      "name": "Browser Agent Extension",
+      "enabled": true,
+      "publicClient": true,
+      "protocol": "openid-connect",
+      "standardFlowEnabled": true,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": false,
+      "authorizationServicesEnabled": false,
+      "attributes": {
+        "pkce.code.challenge.method": "S256",
+        "post.logout.redirect.uris": "+"
+      },
+      "redirectUris": [
+        "https://*/*",
+        "http://localhost/*",
+        "chrome-extension://*/*",
+        "moz-extension://*/*"
+      ],
+      "webOrigins": ["*"],
+      "defaultClientScopes": [
+        "web-origins",
+        "profile",
+        "email",
+        "roles"
+      ],
+      "optionalClientScopes": [
+        "offline_access"
+      ]
+    }
+  ],
+  "users": [
+    {
+      "username": "testuser",
+      "email": "test@example.com",
+      "firstName": "Test",
+      "lastName": "User",
+      "enabled": true,
+      "emailVerified": true,
+      "credentials": [
+        {
+          "type": "password",
+          "value": "password",
+          "temporary": false
+        }
+      ]
+    }
+  ],
+  "roles": {
+    "realm": [
+      {
+        "name": "user",
+        "description": "Regular user"
+      }
+    ]
+  },
+  "defaultRoles": ["offline_access", "uma_authorization", "user"]
+}
