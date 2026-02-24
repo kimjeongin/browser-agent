@@ -78,6 +78,21 @@ Create a meaningful branch name based on the diff content:
 - If on a new branch: `git push -u origin <branch-name>`
 - If adding to an existing branch: `git push origin <branch-name>`
 
+**GitHub CLI를 이용한 인증 (SSH 키 없이 HTTPS push):**
+
+이 프로젝트는 SSH 키 대신 `gh` CLI 인증을 통해 HTTPS로 push합니다.
+push 실패 시 다음 패턴을 사용하세요:
+
+```bash
+# 1. remote를 HTTPS로 변경
+git remote set-url origin https://github.com/<owner>/<repo>.git
+
+# 2. gh CLI를 credential helper로 사용하여 push
+GIT_ASKPASS=/usr/local/bin/gh git push -u origin <branch-name>
+```
+
+`gh auth status`로 인증 상태를 먼저 확인하고, 미인증 시 `gh auth login`을 안내하세요.
+
 ### Step 6: Create or Update PR
 
 **Creating a new PR:**
