@@ -6,6 +6,14 @@
  * for SSE streaming (sidepanel has its own fetch context).
  */
 
+import type { BrowserToolDefinition, ToolResult } from './browser-tools';
+
+/** Typed SSE event as parsed from the commands channel. */
+export interface SSEEvent {
+  type: string;
+  data: unknown;
+}
+
 export class GatewayClient {
   constructor(
     private baseUrl: string,
@@ -103,17 +111,21 @@ export class GatewayClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Browser commands SSE channel
+  // Browser commands SSE channel (typed events)
   // ---------------------------------------------------------------------------
 
   /**
    * Connect to the commands SSE channel for a session.
-   * The gateway pushes browser commands (from Browser Relay MCP) over this channel.
+   *
+   * The gateway pushes typed SSE events over this channel. Each event has an
+   * optional `event:` field (the type) and a `data:` field (JSON payload).
+   * If no `event:` field is present, the type defaults to "message".
+   *
    * Returns a cancel function to tear down the connection.
    */
   async connectCommandsSSE(
     sessionId: string,
-    onCommand: (cmd: unknown) => void,
+    onEvent: (event: SSEEvent) => void,
   ): Promise<() => void> {
     const token = this.getToken();
     const url = `${this.baseUrl}/sessions/${sessionId}/commands`;
@@ -133,17 +145,32 @@ export class GatewayClient {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-        const lines = buffer.split('\n\n');
-        buffer = lines.pop() ?? '';
-        for (const chunk of lines) {
-          for (const line of chunk.split('\n')) {
-            if (line.startsWith('data: ')) {
-              try {
-                onCommand(JSON.parse(line.slice(6)));
-              } catch {
-                /* skip malformed */
-              }
+
+        // SSE frames are separated by double newlines
+        const frames = buffer.split('\n\n');
+        buffer = frames.pop() ?? '';
+
+        for (const frame of frames) {
+          let eventType = 'message';
+          let dataStr = '';
+
+          for (const line of frame.split('\n')) {
+            if (line.startsWith('event: ')) {
+              eventType = line.slice(7).trim();
+            } else if (line.startsWith('data: ')) {
+              // Accumulate data lines (SSE spec allows multiple data: lines)
+              dataStr += (dataStr ? '\n' : '') + line.slice(6);
             }
+            // Ignore id:, retry:, and comment lines
+          }
+
+          if (!dataStr) continue;
+
+          try {
+            const data = JSON.parse(dataStr);
+            onEvent({ type: eventType, data });
+          } catch {
+            /* skip frames with non-JSON data (e.g. keepalive pings) */
           }
         }
       }
@@ -157,20 +184,56 @@ export class GatewayClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Command results
+  // Browser tool registration (webMCP-style)
   // ---------------------------------------------------------------------------
 
-  async postCommandResult(
+  /**
+   * Register this extension's browser tool manifest with the Gateway.
+   * The Gateway stores these definitions so the backend agents know
+   * which tools are available in the connected browser.
+   */
+  async registerBrowserTools(
     sessionId: string,
-    result: unknown,
+    tools: BrowserToolDefinition[],
   ): Promise<void> {
-    await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/command-result`,
+    const res = await fetch(
+      `${this.baseUrl}/sessions/${sessionId}/browser-tools/register`,
+      {
+        method: 'POST',
+        headers: this.headers,
+        body: JSON.stringify({ tools }),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`Register browser tools failed: ${res.status}`);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Tool invocation results
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Report the result of a tool invocation back to the Gateway.
+   * The Gateway forwards this to the Browser Relay MCP server so the
+   * requesting agent receives the tool output.
+   */
+  async postToolResult(
+    sessionId: string,
+    invocationId: string,
+    result: ToolResult,
+  ): Promise<void> {
+    const res = await fetch(
+      `${this.baseUrl}/sessions/${sessionId}/browser-tools/result/${invocationId}`,
       {
         method: 'POST',
         headers: this.headers,
         body: JSON.stringify(result),
       },
     );
+    if (!res.ok) {
+      throw new Error(`Post tool result failed: ${res.status}`);
+    }
   }
+
 }

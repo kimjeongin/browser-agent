@@ -1,6 +1,9 @@
 import { config } from '@/lib/config';
 import { generateRandomString, generateCodeChallenge } from '@/lib/auth';
 import { GatewayClient } from '@/lib/api';
+import type { SSEEvent } from '@/lib/api';
+import { browserToolRegistry } from '@/lib/browser-tools';
+import type { ToolInvocation } from '@/lib/browser-tools';
 
 // ---------------------------------------------------------------------------
 // Token & session state (in-memory -- most secure for extensions)
@@ -106,7 +109,13 @@ async function login(): Promise<{
     _sessionId = session.session_id;
     await browser.storage.local.set({ sessionId: _sessionId });
 
-    // Start listening for browser commands via SSE
+    // Register browser tool manifest with Gateway (webMCP-style)
+    await gateway.registerBrowserTools(
+      _sessionId,
+      browserToolRegistry.getManifest(),
+    );
+
+    // Start listening for tool invocations via SSE
     await startCommandsListener();
 
     return { success: true };
@@ -164,32 +173,38 @@ async function startCommandsListener() {
   if (!_sessionId) return;
   _cancelCommands?.();
 
+  const sessionId = _sessionId;
+
   _cancelCommands = await gateway.connectCommandsSSE(
-    _sessionId,
-    async (command: unknown) => {
-      const cmd = command as {
-        command_id: string;
-        action: string;
-        params: Record<string, unknown>;
-      };
+    sessionId,
+    async (event: SSEEvent) => {
+      if (event.type !== 'tool_invocation') return;
+
+      const invocation = event.data as ToolInvocation;
       try {
         const tabs = await browser.tabs.query({
           active: true,
           currentWindow: true,
         });
-        if (!tabs[0]?.id) return;
+        const tabId = tabs[0]?.id;
+        if (!tabId) {
+          throw new Error('No active tab found');
+        }
 
-        const result = await browser.tabs.sendMessage(tabs[0].id, {
-          type: 'EXECUTE_BROWSER_COMMAND',
-          command: cmd,
+        const result = await browserToolRegistry.invoke(
+          invocation.tool,
+          invocation.params,
+          tabId,
+        );
+
+        await gateway.postToolResult(sessionId, invocation.invocation_id, {
+          success: true,
+          result,
         });
-
-        await gateway.postCommandResult(_sessionId!, result);
       } catch (err) {
-        await gateway.postCommandResult(_sessionId!, {
-          command_id: cmd.command_id,
+        await gateway.postToolResult(sessionId, invocation.invocation_id, {
           success: false,
-          error: (err as Error).message,
+          error: String(err),
         });
       }
     },

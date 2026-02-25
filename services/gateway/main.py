@@ -3,8 +3,11 @@
 Responsibilities:
 - JWT-authenticated session management (Redis-backed)
 - Chat proxy to Orchestrator via ACP (sync and SSE streaming)
-- Browser command SSE channel (Redis Pub/Sub -> Extension)
-- Command result ingestion (Extension -> Redis Pub/Sub -> Browser Relay)
+- webMCP-style browser tool architecture:
+  - Extension registers tool manifests at session start
+  - SSE channel delivers tool_invocation events via asyncio.Queue
+  - Tool invocations block until Extension resolves via asyncio.Future
+  - Redis used only for session state (no Pub/Sub for browser commands)
 """
 
 import asyncio
@@ -26,7 +29,6 @@ from sse_starlette.sse import EventSourceResponse
 from shared.acp.client import ACPClient
 from shared.auth.dependencies import get_current_user
 from shared.auth.jwt_verifier import KeycloakJWTVerifier
-from shared.models.browser_command import CommandResult
 from shared.models.session import Session
 
 logger = logging.getLogger(__name__)
@@ -49,6 +51,7 @@ class Settings(BaseSettings):
     keycloak_realm_url: str = "http://keycloak:8080/realms/browser-agent"
     keycloak_audience: str = "browser-agent-extension"
     session_ttl: int = 86400  # 24 hours
+    tool_invocation_timeout: float = 30.0  # seconds
 
 
 settings = Settings()
@@ -73,6 +76,27 @@ class SessionResponse(BaseModel):
     status: str
 
 
+class BrowserToolManifest(BaseModel):
+    """Tool manifest registered by the extension (webMCP-style)."""
+
+    tools: list[dict]  # Each dict follows JSON Schema tool definition
+
+
+class BrowserToolInvoke(BaseModel):
+    """Request body for invoking a browser tool."""
+
+    tool: str
+    params: dict = {}
+
+
+class BrowserToolResult(BaseModel):
+    """Result submitted by the extension after executing a tool invocation."""
+
+    success: bool
+    result: Any = None
+    error: str | None = None
+
+
 # ---------------------------------------------------------------------------
 # Lifespan -- initialise shared resources
 # ---------------------------------------------------------------------------
@@ -88,7 +112,7 @@ async def lifespan(app: FastAPI):
         audience=settings.keycloak_audience,
     )
 
-    # Redis connection pool
+    # Redis connection pool (session state only)
     app.state.redis = aioredis.from_url(
         settings.redis_url,
         decode_responses=True,
@@ -96,6 +120,11 @@ async def lifespan(app: FastAPI):
 
     # ACP client for Orchestrator
     app.state.acp = ACPClient(base_url=settings.orchestrator_url)
+
+    # webMCP browser tool state
+    app.state.session_queues: dict[str, asyncio.Queue] = {}
+    app.state.pending_invocations: dict[str, asyncio.Future] = {}
+    app.state.browser_tool_manifests: dict[str, list[dict]] = {}
 
     logger.info(
         "Gateway started  [orchestrator=%s, redis=%s]",
@@ -116,7 +145,7 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(
     title="Browser Agent Gateway",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 
@@ -360,79 +389,219 @@ async def chat_stream(
 
 
 # ---------------------------------------------------------------------------
-# Browser command SSE channel (no auth -- content script context)
+# Browser tools -- webMCP-style tool manifest & invocation
 # ---------------------------------------------------------------------------
 
 
-@app.get("/sessions/{session_id}/commands")
-async def browser_command_stream(
+@app.post("/sessions/{session_id}/browser-tools/register")
+async def register_browser_tools(
+    session_id: str,
+    body: BrowserToolManifest,
+    request: Request,
+) -> dict[str, Any]:
+    """Extension registers its available browser tools (webMCP manifest).
+
+    Called once by the Extension Service Worker after establishing the SSE
+    channel. No authentication required (Extension SW context).
+    """
+    request.app.state.browser_tool_manifests[session_id] = body.tools
+
+    logger.info(
+        "Browser tools registered: session=%s count=%d tools=%s",
+        session_id,
+        len(body.tools),
+        [t.get("name") for t in body.tools],
+    )
+    return {"ok": True, "tool_count": len(body.tools)}
+
+
+@app.get("/sessions/{session_id}/browser-tools")
+async def list_browser_tools(
     session_id: str,
     request: Request,
-) -> EventSourceResponse:
-    """SSE stream delivering browser commands from Redis Pub/Sub.
+) -> dict[str, Any]:
+    """Return the tool manifest for a session.
 
-    The extension's background service worker holds this connection open.
-    Browser Relay MCP publishes commands to ``browser_cmd:{session_id}``.
+    Used by Browser Agent to discover available tools. No auth required
+    (internal service call).
     """
-    redis = _redis(request)
-    channel_name = f"browser_cmd:{session_id}"
-
-    async def _command_generator():
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(channel_name)
-        logger.info("SSE subscribed to %s", channel_name)
-
-        try:
-            while True:
-                # Check for client disconnect
-                if await request.is_disconnected():
-                    break
-
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True, timeout=1.0
-                )
-                if message is not None and message["type"] == "message":
-                    yield {"data": message["data"]}
-                else:
-                    # No message within timeout -- send keepalive
-                    yield {"comment": "keepalive"}
-                    # Sleep to enforce ~15s keepalive interval when idle.
-                    # The timeout=1.0 above already waits 1s per iteration;
-                    # we add more sleep only when there is no real data.
-                    await asyncio.sleep(14.0)
-        finally:
-            await pubsub.unsubscribe(channel_name)
-            await pubsub.aclose()
-            logger.info("SSE unsubscribed from %s", channel_name)
-
-    return EventSourceResponse(_command_generator())
+    tools = request.app.state.browser_tool_manifests.get(session_id, [])
+    return {"session_id": session_id, "tools": tools}
 
 
-# ---------------------------------------------------------------------------
-# Browser command result ingestion
-# ---------------------------------------------------------------------------
-
-
-@app.post("/sessions/{session_id}/command-result")
-async def receive_command_result(
+@app.post("/sessions/{session_id}/browser-tools/invoke")
+async def invoke_browser_tool(
     session_id: str,
-    body: CommandResult,
+    body: BrowserToolInvoke,
+    request: Request,
+) -> dict[str, Any]:
+    """Invoke a browser tool and block until the Extension returns a result.
+
+    The Gateway pushes a ``tool_invocation`` event into the session's SSE
+    queue, then awaits an asyncio.Future that the Extension resolves by
+    calling the ``/browser-tools/result/{invocation_id}`` endpoint.
+
+    No auth required (internal service call from Browser Agent).
+    """
+    session_queues: dict[str, asyncio.Queue] = (
+        request.app.state.session_queues
+    )
+    pending: dict[str, asyncio.Future] = (
+        request.app.state.pending_invocations
+    )
+
+    # Verify the Extension SSE channel is connected
+    if session_id not in session_queues:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Extension not connected",
+        )
+
+    invocation_id = uuid.uuid4().hex
+    loop = asyncio.get_running_loop()
+    future: asyncio.Future = loop.create_future()
+    pending[invocation_id] = future
+
+    # Push the invocation event into the SSE queue for the Extension
+    event_payload = {
+        "type": "tool_invocation",
+        "invocation_id": invocation_id,
+        "tool": body.tool,
+        "params": body.params,
+    }
+    await session_queues[session_id].put(event_payload)
+
+    logger.info(
+        "Tool invocation queued: id=%s tool=%s session=%s",
+        invocation_id,
+        body.tool,
+        session_id,
+    )
+
+    try:
+        result = await asyncio.wait_for(
+            future, timeout=settings.tool_invocation_timeout
+        )
+    except TimeoutError:
+        pending.pop(invocation_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_408_REQUEST_TIMEOUT,
+            detail=(
+                f"Tool invocation timed out after "
+                f"{settings.tool_invocation_timeout:.0f}s"
+            ),
+        )
+    except RuntimeError as exc:
+        # Future was resolved with set_exception by the result endpoint
+        pending.pop(invocation_id, None)
+        return {
+            "invocation_id": invocation_id,
+            "success": False,
+            "result": None,
+            "error": str(exc),
+        }
+    finally:
+        pending.pop(invocation_id, None)
+
+    return {
+        "invocation_id": invocation_id,
+        "success": result.get("success", False),
+        "result": result.get("result"),
+    }
+
+
+@app.post("/sessions/{session_id}/browser-tools/result/{invocation_id}")
+async def submit_browser_tool_result(
+    session_id: str,
+    invocation_id: str,
+    body: BrowserToolResult,
     request: Request,
 ) -> dict[str, bool]:
-    """Receive a command execution result from the extension.
+    """Extension submits the result of a tool invocation.
 
-    Publishes the result to ``browser_result:{command_id}`` so that
-    Browser Relay MCP can pick it up.
+    Resolves (or rejects) the asyncio.Future that the ``invoke`` endpoint
+    is awaiting.
     """
-    redis = _redis(request)
-    result_channel = f"browser_result:{body.command_id}"
+    pending: dict[str, asyncio.Future] = (
+        request.app.state.pending_invocations
+    )
+    future = pending.get(invocation_id)
 
-    await redis.publish(result_channel, body.model_dump_json())
+    if future is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="No pending invocation with this ID",
+        )
+
+    if future.done():
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Invocation already resolved",
+        )
+
+    if body.success:
+        future.set_result({"success": True, "result": body.result})
+    else:
+        future.set_exception(
+            RuntimeError(body.error or "Tool execution failed")
+        )
 
     logger.debug(
-        "Command result published: cmd=%s session=%s success=%s",
-        body.command_id,
+        "Tool result received: invocation=%s session=%s success=%s",
+        invocation_id,
         session_id,
         body.success,
     )
     return {"ok": True}
+
+
+# ---------------------------------------------------------------------------
+# Browser tool SSE channel (no auth -- Extension SW context)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/sessions/{session_id}/commands")
+async def browser_tool_stream(
+    session_id: str,
+    request: Request,
+) -> EventSourceResponse:
+    """SSE stream delivering tool invocation events to the Extension.
+
+    The Extension's background Service Worker holds this connection open.
+    Events are read from an asyncio.Queue (populated by the ``invoke``
+    endpoint). Keepalive comments are sent every ~15 seconds when idle.
+    """
+    session_queues: dict[str, asyncio.Queue] = (
+        request.app.state.session_queues
+    )
+
+    queue: asyncio.Queue = asyncio.Queue()
+    session_queues[session_id] = queue
+
+    logger.info("SSE tool channel opened: session=%s", session_id)
+
+    async def _event_generator():
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=15.0)
+                except TimeoutError:
+                    # No pending invocations -- send keepalive
+                    yield {"comment": "keepalive"}
+                    continue
+
+                event_type = event.get("type", "message")
+                yield {
+                    "event": event_type,
+                    "data": json.dumps(event, ensure_ascii=False),
+                }
+        finally:
+            # Cleanup: remove queue so invoke endpoint knows Extension
+            # is disconnected
+            session_queues.pop(session_id, None)
+            logger.info("SSE tool channel closed: session=%s", session_id)
+
+    return EventSourceResponse(_event_generator())
