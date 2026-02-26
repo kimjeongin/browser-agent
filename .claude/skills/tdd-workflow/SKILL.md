@@ -242,6 +242,95 @@ pnpm test --watch  # watch 모드
 
 ---
 
+## Gateway webMCP 비동기 패턴 테스트
+
+Gateway의 `invoke_browser_tool` 엔드포인트는 asyncio.Future로 Extension의 응답을 기다린다.
+이 패턴을 테스트하려면 두 HTTP 요청을 **동시에** 실행해야 한다.
+
+### Lifespan 모킹 (Redis / Keycloak / ACP 연결 없이 테스트)
+
+```python
+# tests/conftest.py
+import asyncio
+from unittest.mock import AsyncMock, patch
+
+import pytest
+from httpx import ASGITransport, AsyncClient
+
+from gateway.main import app
+
+
+@pytest.fixture
+async def gateway_client():
+    """AsyncClient with mocked external services."""
+    mock_redis = AsyncMock()
+    mock_redis.aclose = AsyncMock()
+
+    with (
+        patch("gateway.main.aioredis.from_url", return_value=mock_redis),
+        patch("gateway.main.KeycloakJWTVerifier"),
+        patch("gateway.main.ACPClient"),
+    ):
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            yield client
+```
+
+### asyncio.gather()로 invoke ↔ result 동시 테스트
+
+```python
+async def test_invoke_and_result_roundtrip(gateway_client):
+    session_id = "test-session"
+
+    # SSE 채널 연결 시뮬레이션: queue를 직접 app.state에 주입
+    queue = asyncio.Queue()
+    app.state.session_queues[session_id] = queue
+
+    async def do_invoke():
+        return await gateway_client.post(
+            f"/sessions/{session_id}/browser-tools/invoke",
+            json={"tool": "navigate", "params": {"url": "https://example.com"}},
+        )
+
+    async def do_submit_result():
+        # invoke가 queue에 이벤트를 넣을 때까지 대기
+        event = await asyncio.wait_for(queue.get(), timeout=5.0)
+        invocation_id = event["invocation_id"]
+        return await gateway_client.post(
+            f"/sessions/{session_id}/browser-tools/result/{invocation_id}",
+            json={"success": True, "result": {"url": "https://example.com"}},
+        )
+
+    # 두 코루틴을 동시에 실행 — invoke는 Future를 기다리고,
+    # submit_result가 Future를 resolve해서 invoke가 응답을 반환
+    invoke_res, result_res = await asyncio.gather(do_invoke(), do_submit_result())
+
+    assert invoke_res.status_code == 200
+    assert invoke_res.json()["success"] is True
+    assert result_res.status_code == 200
+```
+
+### app.state 직접 조작 (Future 상태 테스트)
+
+```python
+async def test_submit_result_409_already_resolved(gateway_client):
+    invocation_id = "test-inv-id"
+    loop = asyncio.get_running_loop()
+    future = loop.create_future()
+    future.set_result({"success": True, "result": None})  # 이미 완료된 Future
+
+    app.state.pending_invocations[invocation_id] = future
+
+    response = await gateway_client.post(
+        f"/sessions/any/browser-tools/result/{invocation_id}",
+        json={"success": True, "result": {}},
+    )
+    assert response.status_code == 409
+```
+
+---
+
 ## 품질 체크리스트
 
 구현 완료 전 확인:
