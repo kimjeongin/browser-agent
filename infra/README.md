@@ -9,7 +9,7 @@
 | 서비스 | 포트 | 역할 | 이미지 |
 |--------|------|------|--------|
 | `postgres` | 5432 | 애플리케이션 DB, Keycloak DB, LangGraph 체크포인트 | `pgvector/pgvector:pg16` |
-| `redis` | 6379 | 브라우저 명령 Pub/Sub, 세션 캐시 | `redis:7-alpine` |
+| `redis` | 6379 | 세션 캐시 | `redis:7-alpine` |
 | `minio` | 9000 (API), 9001 (Console) | 스크린샷·파일 오브젝트 스토리지 (S3 호환) | `minio/minio:latest` |
 | `keycloak` | 8080 | JWT 발급, PKCE 플로우, JWKS 제공 | `quay.io/keycloak/keycloak:26.5.3` |
 
@@ -17,11 +17,10 @@
 
 | 서비스 | 포트 | 역할 |
 |--------|------|------|
-| `gateway` | 8000 | API 진입점, SSE 허브, JWT 검증 |
+| `gateway` | 8000 | API 진입점, SSE 허브, JWT 검증, 브라우저 도구 브로커 |
 | `orchestrator` | 8001 | 의도 분류, 에이전트 라우팅 |
 | `chat-agent` | 8002 | 웹 검색, 일반 대화 |
 | `browser-agent` | 8003 | DOM 제어 에이전트 |
-| `browser-relay` | 8010 | 브라우저 명령 중계 MCP 서버 |
 
 ---
 
@@ -38,7 +37,7 @@ docker compose up -d
 
 ### `docker-compose.services.yml` — 전체 스택
 
-`include: docker-compose.yml`로 인프라 서비스를 포함한 후, 애플리케이션 서비스(gateway, orchestrator, chat-agent, browser-agent, browser-relay)를 추가로 정의한다. 단일 명령으로 전체 스택을 올릴 때 사용한다.
+`include: docker-compose.yml`로 인프라 서비스를 포함한 후, 애플리케이션 서비스(gateway, orchestrator, chat-agent, browser-agent)를 추가로 정의한다. 단일 명령으로 전체 스택을 올릴 때 사용한다.
 
 ```bash
 cd infra
@@ -71,8 +70,8 @@ postgres (healthy)
     └── 각 서비스 (postgres healthy 후 시작)
             └── gateway (keycloak healthy 후 시작)
 redis (healthy)
-    └── browser-relay (redis healthy 후 시작)
-            └── browser-agent (browser-relay healthy 후 시작)
+    └── gateway (redis healthy 후 시작)
+browser-agent (gateway healthy 후 시작)
 ```
 
 `postgres/init.sql`이 PostgreSQL 최초 초기화 시 실행된다:
@@ -102,7 +101,6 @@ CREATE EXTENSION IF NOT EXISTS vector;
 | Orchestrator | 8001 | 8001 |
 | Chat Agent | 8002 | 8002 |
 | Browser Agent | 8003 | 8003 |
-| Browser Relay MCP | 8010 | 8010 |
 
 ---
 
