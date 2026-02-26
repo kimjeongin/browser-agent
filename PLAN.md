@@ -1,7 +1,9 @@
 # Browser Agent - 개발 계획서
 
 > 최종 수정: 2026-02-24 (Keycloak 인증 추가)
-> 상태: 계획 확정 (구현 전)
+> ⚠️ 역사적 문서: 이 계획서는 초기 설계 단계의 내용이며 현재 구현과 다를 수 있습니다.
+> 현재 구현은 Browser Relay MCP + Redis Pub/Sub 대신 asyncio.Queue + asyncio.Future (webMCP-inspired) 패턴을 사용합니다.
+> 최신 아키텍처는 각 서비스 README를 참조하세요.
 
 ---
 

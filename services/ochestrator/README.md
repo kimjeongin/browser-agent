@@ -94,7 +94,7 @@ docker compose -f docker-compose.services.yml up --build ochestrator
 ## 구현 주의사항
 
 - `supervisor` 노드는 `streaming=False`로 LLM을 초기화한다. 분류는 단일 JSON 응답만 필요하므로 스트리밍이 불필요하다.
-- ACP로 서브 에이전트를 호출할 때 각 호출에 새 `thread_id`(UUID)를 생성한다. Orchestrator의 체크포인터와 서브 에이전트의 체크포인터가 분리되어 있기 때문이다.
+- ACP로 서브 에이전트를 호출할 때 `session_id`를 `thread_id`로 사용한다. Browser Agent가 세션 단위로 LangGraph 체크포인트를 유지해 멀티턴 대화를 지원하기 위함이다.
 - `AsyncPostgresSaver`는 psycopg DSN(`postgresql://`)을 요구한다. `database_url`의 `postgresql+asyncpg://` 접두사를 `_psycopg_connection_string()`으로 변환해 전달한다.
 - 서브 에이전트 호출 실패 시 오류를 전파하지 않고 사용자에게 오류 메시지 `AIMessage`를 반환한다.
 

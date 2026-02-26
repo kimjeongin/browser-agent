@@ -8,31 +8,37 @@ WXT 브라우저 확장 + 멀티 에이전트 AI 백엔드로 구성된 AI 챗�
 
 ```
 Extension (WXT/Chrome) ──Bearer JWT──▶ Gateway :8000
-                       ◀──SSE chat──
-                       ◀──SSE commands──
+                       ◀──SSE chat stream──
+                       ◀──SSE browser commands──
 
 Gateway :8000 ──ACP──▶ Orchestrator :8001
                             ├──ACP──▶ Chat Agent :8002
                             └──ACP──▶ Browser Agent :8003
 
-Browser Agent :8003 ──MCP/HTTP──▶ Browser Relay MCP :8010
-Browser Relay MCP :8010 ──Redis Pub/Sub──▶ Gateway :8000 ──SSE──▶ Extension
-Extension (content.ts) ──POST /command-result──▶ Gateway :8000
+Browser Agent :8003 ──POST /browser-tools/invoke──▶ Gateway :8000
+Gateway :8000 ──asyncio.Queue──▶ SSE /commands──▶ Extension
+Extension ──POST /browser-tools/result/{inv_id}──▶ Gateway :8000
 ```
+
+### webMCP-inspired 브라우저 제어 흐름 (3-hop)
+
+1. Browser Agent가 `POST /sessions/{id}/browser-tools/invoke` 호출 (blocking, 60s)
+2. Gateway가 `asyncio.Queue`에 tool invocation 이벤트 추가 → SSE로 Extension push
+3. Extension이 DOM 액션 실행 후 `POST /sessions/{id}/browser-tools/result/{inv_id}` 호출
+4. Gateway `asyncio.Future.set_result()` → Browser Agent 응답 반환
 
 ### 컴포넌트 역할
 
 | 컴포넌트 | 포트 | 역할 | 기술 스택 |
 |----------|------|------|-----------|
 | Extension | — | 사용자 UI, DOM 제어 | WXT, React 19, Tailwind v4, Zustand |
-| Gateway | 8000 | 진입점, SSE 허브, JWT 검증 | FastAPI, Redis |
+| Gateway | 8000 | 진입점, SSE 허브, JWT 검증, 브라우저 도구 브로커 | FastAPI, Redis |
 | Orchestrator | 8001 | 의도 분류, 에이전트 라우팅 | FastAPI, LangGraph |
 | Chat Agent | 8002 | 웹 검색, 일반 대화 | FastAPI, LangGraph, DuckDuckGo |
-| Browser Agent | 8003 | DOM 제어 | FastAPI, LangGraph, MCP |
-| Browser Relay MCP | 8010 | 브라우저 명령 중계 | FastMCP, Redis Pub/Sub |
+| Browser Agent | 8003 | DOM 제어 | FastAPI, LangGraph, httpx |
 | Keycloak | 8080 | JWT 발급, PKCE | Keycloak 26 |
 | PostgreSQL | 5432 | DB, LangGraph 체크포인트 | pgvector/pgvector:pg16 |
-| Redis | 6379 | Pub/Sub, 세션 캐시 | Redis 7 |
+| Redis | 6379 | 세션 캐시 | Redis 7 |
 | MinIO | 9000/9001 | 오브젝트 스토리지 | MinIO |
 
 ---
@@ -48,7 +54,7 @@ Extension (content.ts) ──POST /command-result──▶ Gateway :8000
 Ollama 모델을 미리 pull한다:
 
 ```bash
-ollama pull llama3.1:8b      # Orchestrator
+ollama pull llama3.1:8b      # Orchestrator (의도 분류)
 ollama pull qwen2.5:7b       # Chat Agent
 ollama pull qwen2.5:14b      # Browser Agent
 ```
@@ -93,7 +99,7 @@ pnpm build
 
 | 변수 | 서비스 | 예시 |
 |------|--------|------|
-| `REDIS_URL` | Gateway, Browser Relay | `redis://redis:6379/0` |
+| `REDIS_URL` | Gateway | `redis://redis:6379/0` |
 | `DATABASE_URL` | Gateway, Orchestrator, Chat, Browser | `postgresql+asyncpg://postgres:password@postgres:5432/browser_agent` |
 | `ORCHESTRATOR_URL` | Gateway | `http://orchestrator:8001` |
 | `KEYCLOAK_REALM_URL` | Gateway | `http://keycloak:8080/realms/browser-agent` |
@@ -102,7 +108,8 @@ pnpm build
 | `ORCHESTRATOR_MODEL` | Orchestrator | `llama3.1:8b` |
 | `CHAT_MODEL` | Chat Agent | `qwen2.5:7b` |
 | `BROWSER_MODEL` | Browser Agent | `qwen2.5:14b` |
-| `BROWSER_RELAY_MCP_URL` | Browser Agent | `http://browser-relay:8010/mcp` |
+| `GATEWAY_URL` | Browser Agent | `http://gateway:8000` |
+| `BROWSER_TOOL_TIMEOUT` | Gateway, Browser Agent | `60.0` / `65.0` |
 
 ### Extension (`extension/.env`)
 
@@ -126,6 +133,19 @@ uv pip install -e ../shared -e .
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### 테스트 실행
+
+```bash
+# Gateway 테스트
+cd services/gateway && uv run pytest
+
+# Browser Agent 테스트
+cd services/browser_agent && uv run pytest
+
+# Extension 테스트
+cd extension && pnpm test
+```
+
 ---
 
 ## 프로젝트 구조
@@ -134,20 +154,19 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 browser-agent/
 ├── extension/                  # WXT 브라우저 확장
 │   ├── entrypoints/
-│   │   ├── background.ts       # PKCE 인증, 명령 SSE 수신
+│   │   ├── background.ts       # PKCE 인증, 명령 SSE 수신, 탭 그룹 관리
 │   │   ├── content.ts          # DOM 액션 실행
-│   │   └── sidepanel/          # 채팅 UI (React)
+│   │   └── sidepanel/          # 채팅 UI (React) + 브라우저 제어 상태 표시
 │   ├── lib/                    # API 클라이언트, 인증 유틸
 │   └── stores/                 # Zustand 상태 저장소
 ├── services/
 │   ├── shared/                 # 공유 패키지 (auth, acp, llm, models)
-│   ├── gateway/                # 진입점 서비스
+│   ├── gateway/                # 진입점 서비스 + 브라우저 도구 브로커
 │   ├── ochestrator/            # 슈퍼바이저 에이전트
 │   ├── chat_agent/             # 웹 검색 에이전트
 │   └── browser_agent/          # 브라우저 제어 에이전트
 ├── mcp_servers/
-│   ├── browser_relay/          # 브라우저 명령 중계 MCP 서버
-│   └── web_search/             # 웹 검색 MCP 서버 (stdio)
+│   └── web_search/             # 웹 검색 MCP 서버 (stdio, Chat Agent용)
 └── infra/
     ├── docker-compose.yml           # 인프라 서비스
     ├── docker-compose.services.yml  # 애플리케이션 서비스
@@ -162,9 +181,11 @@ browser-agent/
 | 결정 | 이유 |
 |------|------|
 | SSE (WebSocket 아님) | Chrome Extension Service Worker에서 `EventSource` 미지원. `fetch` + `ReadableStream` 사용 |
-| Redis Pub/Sub | Browser Relay와 Gateway 간 디커플링. Gateway 수평 확장 시 명령 누락 없음 |
-| subscribe-before-publish | Redis 구독을 명령 발행 전에 완료해서 결과 메시지 유실 방지 |
+| asyncio.Queue + asyncio.Future | 브라우저 도구 조율을 단일 Gateway 인스턴스 내에서 처리. Redis Pub/Sub보다 단순하고 오버헤드 없음 |
+| Gateway 직접 HTTP (MCP 서버 없음) | Browser Agent → Gateway 직접 호출로 중간 계층 제거. 3홉으로 충분 |
 | ACP 프로토콜 (HTTP POST) | 에이전트 간 표준 인터페이스. 각 서비스가 독립적으로 배포/스케일 가능 |
+| session_id = thread_id | Browser Agent가 session 단위로 LangGraph 체크포인트를 유지해 멀티턴 대화 지원 |
 | Keycloak PKCE | Extension은 `client_secret` 안전 보관 불가 → Public client + PKCE S256 강제 |
 | Access Token 메모리 저장 | `localStorage`/`sessionStorage`는 XSS 취약. Service Worker 메모리만 사용 |
+| Chrome Tab Groups API | AI 제어 탭을 "AI Assistant" 그룹으로 격리해 사용자가 시각적으로 구분 가능 |
 | psycopg (LangGraph 체크포인터) | `langgraph-checkpoint-postgres`가 asyncpg가 아닌 psycopg를 요구 |
