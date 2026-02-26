@@ -3,7 +3,6 @@
 import json
 import logging
 import re
-import uuid
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Annotated, Any
@@ -55,6 +54,7 @@ Available agents:
   such as clicking, typing, navigating to URLs, scrolling, taking screenshots
   of specific web pages, filling forms, extracting visible page content, or
   any action that manipulates or reads the DOM of a live web page.
+  Examples: "유튜브에서 아이유 검색해줘", "이 버튼 클릭해줘", "구글에서 검색해줘"
 - "chat_agent": Handles everything else -- general questions, web search
   queries, summarisation, translation, coding help, math, and conversation.
 
@@ -66,6 +66,7 @@ Example: {"agent": "chat_agent"}
 class SupervisorState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
     next_agent: str | None
+    session_id: str | None  # passed through for browser agent
 
 
 # ---------------------------------------------------------------------------
@@ -103,7 +104,6 @@ async def supervisor_node(
 
 def _parse_agent_from_response(text: str) -> str:
     """Extract agent name from the LLM's JSON response, with fallback."""
-    # Try to find JSON in the response
     json_match = re.search(r"\{[^}]+\}", text)
     if json_match:
         try:
@@ -114,7 +114,6 @@ def _parse_agent_from_response(text: str) -> str:
         except (json.JSONDecodeError, AttributeError):
             pass
 
-    # Fallback: check for keywords
     lower = text.lower()
     if "browser_agent" in lower:
         return "browser_agent"
@@ -143,12 +142,12 @@ async def call_chat_agent(
     chat_client: ACPClient,
 ) -> dict[str, Any]:
     """Forward the conversation to the Chat Agent via ACP."""
-    thread_id = str(uuid.uuid4())
+    session_id = state.get("session_id") or ""
     serialized = _serialize_messages(state["messages"])
 
     try:
         result = await chat_client.run(
-            thread_id=thread_id,
+            thread_id=session_id or "default",
             input={"messages": serialized},
         )
 
@@ -170,14 +169,22 @@ async def call_browser_agent(
     *,
     browser_client: ACPClient,
 ) -> dict[str, Any]:
-    """Forward the conversation to the Browser Agent via ACP."""
-    thread_id = str(uuid.uuid4())
+    """Forward the conversation to the Browser Agent via ACP.
+
+    Uses session_id as the thread_id so the Browser Agent maintains
+    per-session conversation history (multi-turn support).
+    Also passes session_id in the input so the LLM can use it in tool calls.
+    """
+    session_id = state.get("session_id") or ""
     serialized = _serialize_messages(state["messages"])
 
     try:
         result = await browser_client.run(
-            thread_id=thread_id,
-            input={"messages": serialized},
+            thread_id=session_id or "default",
+            input={
+                "messages": serialized,
+                "session_id": session_id,
+            },
         )
 
         response_text = _extract_response_text(result)
@@ -199,18 +206,15 @@ def _extract_response_text(result: dict[str, Any]) -> str:
     if not output:
         return result.get("error", "No response received.")
 
-    # The sub-agent graph likely returns {"messages": [...]}
     messages = output.get("messages", [])
     if messages:
         last = messages[-1]
-        # Could be a dict or a serialized LangChain message
         if isinstance(last, dict):
             return last.get("content", str(last))
         if hasattr(last, "content"):
             return last.content
         return str(last)
 
-    # Fallback: return the whole output as string
     return str(output)
 
 
@@ -237,13 +241,7 @@ def build_supervisor_graph(
     browser_client: ACPClient,
     checkpointer: AsyncPostgresSaver,
 ) -> Any:
-    """Construct the compiled LangGraph supervisor graph.
-
-    The graph has a simple three-node topology:
-
-        supervisor ──(conditional)──> chat_agent ──> END
-                   └───────────────> browser_agent ──> END
-    """
+    """Construct the compiled LangGraph supervisor graph."""
     builder = StateGraph(SupervisorState)
 
     builder.add_node("supervisor", partial(supervisor_node, llm=llm))
@@ -264,10 +262,6 @@ def build_supervisor_graph(
 
 
 def _psycopg_connection_string(database_url: str) -> str:
-    """Convert an asyncpg-style DSN to a psycopg-compatible one.
-
-    ``postgresql+asyncpg://...`` -> ``postgresql://...``
-    """
     return re.sub(r"^postgresql\+asyncpg://", "postgresql://", database_url)
 
 
@@ -282,7 +276,7 @@ async def lifespan(app: FastAPI):
         llm = create_ollama_llm(
             model=llm_settings.orchestrator_model,
             settings=llm_settings,
-            streaming=False,  # classification does not need streaming
+            streaming=False,
         )
 
         chat_client = ACPClient(settings.chat_agent_url)
@@ -306,7 +300,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Orchestrator Agent",
     description="LangGraph supervisor that routes requests to Chat or Browser agents.",
-    version="0.1.0",
+    version="0.2.0",
     lifespan=lifespan,
 )
 

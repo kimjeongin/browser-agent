@@ -1,8 +1,15 @@
-"""Browser Agent -- FastAPI + LangGraph ReAct agent with MCP browser tools.
+"""Browser Agent -- FastAPI + LangGraph ReAct agent with Gateway browser tools.
 
-Connects to the Browser Relay MCP server over streamable-HTTP transport,
-loads browser-control tools via ``langchain-mcp-adapters``, and exposes
-ACP endpoints (/runs, /runs/stream, /health) for the orchestrator.
+Connects directly to the Gateway service to invoke browser tools on the
+user's Chrome extension. No longer depends on the Browser Relay MCP server.
+
+webMCP-inspired tool invocation flow:
+  LangGraph tool call
+    → GatewayBrowserToolsClient.invoke(session_id, tool_name, params)
+    → POST /sessions/{id}/browser-tools/invoke (Gateway, blocking 60s)
+    → Gateway SSE → Extension executes DOM action
+    → Extension POST /browser-tools/result/{inv_id}
+    → Gateway Future resolved → response returned to agent
 """
 
 from __future__ import annotations
@@ -11,15 +18,14 @@ import logging
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
 
+import httpx
 from fastapi import FastAPI
 from langchain_core.messages import BaseMessage, SystemMessage
+from langchain_core.tools import tool
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from mcp import ClientSession
-from mcp.client.streamable_http import streamablehttp_client
-from langchain_mcp_adapters.tools import load_mcp_tools
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import TypedDict
 
@@ -32,6 +38,7 @@ logger = logging.getLogger(__name__)
 # Settings
 # ---------------------------------------------------------------------------
 
+
 class BrowserAgentSettings(BaseSettings):
     """Environment-driven configuration for the Browser Agent."""
 
@@ -41,29 +48,281 @@ class BrowserAgentSettings(BaseSettings):
         "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
     )
     browser_model: str = "qwen2.5:14b"
-    browser_relay_mcp_url: str = "http://browser-relay:8010/mcp"
+    gateway_url: str = "http://gateway:8000"
+    browser_tool_timeout: float = 65.0  # slightly longer than gateway timeout
 
 
 # ---------------------------------------------------------------------------
-# LangGraph state & graph builder
+# Gateway Browser Tools Client
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = (
-    "You are a browser automation agent. You have tools to control a "
-    "browser tab: navigate to URLs, click elements, type text, take "
-    "screenshots, and extract page content.\n\n"
-    "Guidelines:\n"
-    "1. Always start by navigating to the relevant URL.\n"
-    "2. Use screenshots to verify your actions succeeded.\n"
-    "3. The session_id is provided in the conversation context. "
-    "Include it in every tool call that requires it.\n"
-    "4. If a tool call fails, retry once before reporting the error.\n"
-    "5. Report the outcome of each step to the user clearly."
-)
+
+class GatewayBrowserToolsClient:
+    """HTTP client for invoking browser tools via the Gateway.
+
+    The Gateway holds the asyncio.Queue → SSE → Extension pipeline.
+    This client makes blocking POST requests that return only when the
+    Extension has executed the tool and posted its result back.
+    """
+
+    def __init__(self, gateway_url: str, timeout: float = 65.0) -> None:
+        self._base_url = gateway_url.rstrip("/")
+        self._timeout = timeout
+
+    async def invoke(
+        self,
+        session_id: str,
+        tool_name: str,
+        params: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Invoke a browser tool and wait for the result.
+
+        Raises:
+            RuntimeError: If the tool execution fails or times out.
+        """
+        url = f"{self._base_url}/sessions/{session_id}/browser-tools/invoke"
+        payload = {"tool_name": tool_name, "params": params}
+
+        async with httpx.AsyncClient(timeout=self._timeout) as client:
+            try:
+                resp = await client.post(url, json=payload)
+            except httpx.TimeoutException as e:
+                raise RuntimeError(
+                    f"Browser tool '{tool_name}' timed out: {e}"
+                ) from e
+
+        if resp.status_code == 504:
+            raise RuntimeError(
+                f"Browser tool '{tool_name}' timed out at Gateway"
+            )
+        if not resp.is_success:
+            raise RuntimeError(
+                f"Browser tool '{tool_name}' failed: HTTP {resp.status_code} - {resp.text}"
+            )
+
+        data = resp.json()
+        if not data.get("success"):
+            error = data.get("error", "Unknown browser tool error")
+            raise RuntimeError(f"Browser tool '{tool_name}' failed: {error}")
+
+        return data.get("result", data)
+
+
+# Module-level client singleton (initialised in lifespan)
+_gateway_client: GatewayBrowserToolsClient | None = None
+
+
+def _get_client() -> GatewayBrowserToolsClient:
+    if _gateway_client is None:
+        raise RuntimeError("GatewayBrowserToolsClient not initialised")
+    return _gateway_client
+
+
+# ---------------------------------------------------------------------------
+# LangGraph state
+# ---------------------------------------------------------------------------
 
 
 class AgentState(TypedDict):
     messages: Annotated[list[BaseMessage], add_messages]
+    session_id: str
+
+
+# ---------------------------------------------------------------------------
+# Browser tools (LangChain @tool, calling Gateway)
+# ---------------------------------------------------------------------------
+# session_id is passed as a parameter to each tool.
+# The LLM is instructed to always include the session_id from state.
+
+
+@tool
+async def browser_navigate(session_id: str, url: str) -> dict[str, Any]:
+    """Navigate the AI-controlled browser tab to a URL.
+
+    Args:
+        session_id: Active session ID linked to the user's browser.
+        url: Full URL to navigate to (e.g. https://www.youtube.com).
+    """
+    return await _get_client().invoke(session_id, "navigate", {"url": url})
+
+
+@tool
+async def browser_click(session_id: str, selector: str) -> dict[str, Any]:
+    """Click an element in the browser tab.
+
+    Args:
+        session_id: Active session ID.
+        selector: CSS selector of the element to click.
+    """
+    return await _get_client().invoke(session_id, "click", {"selector": selector})
+
+
+@tool
+async def browser_type(
+    session_id: str,
+    selector: str,
+    text: str,
+    clear_first: bool = True,
+) -> dict[str, Any]:
+    """Type text into an input field.
+
+    Args:
+        session_id: Active session ID.
+        selector: CSS selector of the input element.
+        text: Text to type.
+        clear_first: Whether to clear the field before typing.
+    """
+    return await _get_client().invoke(
+        session_id,
+        "type",
+        {"selector": selector, "text": text, "clear_first": clear_first},
+    )
+
+
+@tool
+async def browser_scroll(
+    session_id: str,
+    direction: str = "down",
+    amount: int = 300,
+    selector: str | None = None,
+) -> dict[str, Any]:
+    """Scroll the page or a specific element.
+
+    Args:
+        session_id: Active session ID.
+        direction: 'up', 'down', 'left', or 'right'.
+        amount: Pixels to scroll.
+        selector: Optional CSS selector to scroll a specific element.
+    """
+    params: dict[str, Any] = {"direction": direction, "amount": amount}
+    if selector:
+        params["selector"] = selector
+    return await _get_client().invoke(session_id, "scroll", params)
+
+
+@tool
+async def browser_screenshot(session_id: str) -> dict[str, Any]:
+    """Capture a screenshot of the current browser tab.
+
+    Args:
+        session_id: Active session ID.
+
+    Returns:
+        Dict with 'screenshot' key containing base64-encoded PNG.
+    """
+    return await _get_client().invoke(session_id, "screenshot", {})
+
+
+@tool
+async def browser_extract_content(
+    session_id: str,
+    selector: str | None = None,
+    include_html: bool = False,
+) -> dict[str, Any]:
+    """Extract text content from the page or a specific element.
+
+    Args:
+        session_id: Active session ID.
+        selector: Optional CSS selector. If None, extracts entire page body.
+        include_html: Whether to include raw HTML in the result.
+    """
+    params: dict[str, Any] = {"include_html": include_html}
+    if selector:
+        params["selector"] = selector
+    return await _get_client().invoke(session_id, "extract_content", params)
+
+
+@tool
+async def browser_wait_for_element(
+    session_id: str,
+    selector: str,
+    timeout_ms: int = 10000,
+    visible: bool = True,
+) -> dict[str, Any]:
+    """Wait for an element to appear in the DOM.
+
+    Args:
+        session_id: Active session ID.
+        selector: CSS selector to wait for.
+        timeout_ms: Maximum wait time in milliseconds.
+        visible: Whether the element must also be visible.
+    """
+    return await _get_client().invoke(
+        session_id,
+        "wait_for_element",
+        {"selector": selector, "timeout_ms": timeout_ms, "visible": visible},
+    )
+
+
+@tool
+async def browser_evaluate_js(session_id: str, script: str) -> dict[str, Any]:
+    """Execute JavaScript in the browser tab and return the result.
+
+    Args:
+        session_id: Active session ID.
+        script: JavaScript expression to evaluate. Must be an expression (not a statement).
+    """
+    return await _get_client().invoke(
+        session_id, "evaluate_js", {"script": script}
+    )
+
+
+@tool
+async def get_page_info(session_id: str) -> dict[str, Any]:
+    """Get current page URL, title, and ready state.
+
+    Args:
+        session_id: Active session ID.
+    """
+    return await _get_client().invoke(session_id, "get_page_info", {})
+
+
+BROWSER_TOOLS = [
+    browser_navigate,
+    browser_click,
+    browser_type,
+    browser_scroll,
+    browser_screenshot,
+    browser_extract_content,
+    browser_wait_for_element,
+    browser_evaluate_js,
+    get_page_info,
+]
+
+# ---------------------------------------------------------------------------
+# System prompt
+# ---------------------------------------------------------------------------
+
+SYSTEM_PROMPT = """\
+You are a browser automation agent. You have tools to control a browser tab:
+navigate to URLs, click elements, type text, take screenshots, and extract content.
+
+The user's session_id is available in the conversation state. You MUST include
+it in every tool call.
+
+Guidelines:
+1. Always start by navigating to the relevant URL using browser_navigate.
+2. After navigation, wait briefly then take a screenshot to verify the page loaded.
+3. Use get_page_info to check the current URL and title before acting.
+4. For search tasks: navigate to the site → click/type in search box → press Enter or click search button → wait for results → click the desired result.
+5. If a selector fails, try alternatives (e.g. input[name="search_query"] for YouTube search).
+6. Use browser_wait_for_element to wait for dynamic content before interacting.
+7. Take screenshots at key steps to verify your progress.
+8. Report each action you take and its result to the user clearly.
+9. If a tool call fails, try once with a different selector before reporting failure.
+
+For YouTube tasks:
+- Navigate to https://www.youtube.com
+- Search box selector: input#search or ytd-searchbox input
+- Search button: button#search-icon-legacy or ytd-searchbox button[aria-label='Search']
+- After search, click on the most relevant video result
+- Verify playback with a screenshot
+"""
+
+
+# ---------------------------------------------------------------------------
+# LangGraph graph builder
+# ---------------------------------------------------------------------------
 
 
 def build_browser_graph(
@@ -71,18 +330,21 @@ def build_browser_graph(
     tools: list,
     checkpointer: Any,
 ) -> Any:
-    """Compile a ReAct-style LangGraph for the browser agent.
-
-    The graph alternates between the LLM node and the tool-execution node,
-    using ``tools_condition`` to decide whether to loop or finish.
-    """
+    """Compile a ReAct-style LangGraph for the browser agent."""
     builder = StateGraph(AgentState)
 
     async def call_model(state: AgentState) -> dict[str, Any]:
         messages = state["messages"]
-        # Inject the system prompt if it is not already present.
+        session_id = state.get("session_id", "")
+
+        # Inject system prompt with session_id context
+        system_content = SYSTEM_PROMPT
+        if session_id:
+            system_content += f"\n\nCurrent session_id: {session_id}\nAlways use this session_id in your tool calls."
+
         if not messages or not isinstance(messages[0], SystemMessage):
-            messages = [SystemMessage(content=SYSTEM_PROMPT), *messages]
+            messages = [SystemMessage(content=system_content), *messages]
+
         response = await llm_with_tools.ainvoke(messages)
         return {"messages": [response]}
 
@@ -96,107 +358,51 @@ def build_browser_graph(
 
 
 # ---------------------------------------------------------------------------
-# MCP connection management
-# ---------------------------------------------------------------------------
-
-class MCPConnection:
-    """Manages the lifecycle of a persistent MCP client session.
-
-    The MCP streamable-HTTP transport must stay open for the entire
-    application lifetime so that the agent can invoke browser tools on
-    demand without reconnecting for every request.
-    """
-
-    def __init__(self) -> None:
-        self._transport_cm: Any = None
-        self._session_cm: Any = None
-        self.session: ClientSession | None = None
-        self.tools: list = []
-
-    async def connect(self, mcp_url: str) -> list:
-        """Open transport and session, then load LangChain tools."""
-        self._transport_cm = streamablehttp_client(mcp_url)
-        read, write, _ = await self._transport_cm.__aenter__()
-
-        self._session_cm = ClientSession(read, write)
-        self.session = await self._session_cm.__aenter__()
-        await self.session.initialize()
-
-        self.tools = await load_mcp_tools(self.session)
-        logger.info(
-            "MCP connected -- loaded %d tools: %s",
-            len(self.tools),
-            [t.name for t in self.tools],
-        )
-        return self.tools
-
-    async def disconnect(self) -> None:
-        """Gracefully close session and transport."""
-        if self._session_cm is not None:
-            try:
-                await self._session_cm.__aexit__(None, None, None)
-            except Exception:
-                logger.warning("MCP session close failed", exc_info=True)
-        if self._transport_cm is not None:
-            try:
-                await self._transport_cm.__aexit__(None, None, None)
-            except Exception:
-                logger.warning("MCP transport close failed", exc_info=True)
-        self.session = None
-        self.tools = []
-
-
-# ---------------------------------------------------------------------------
 # FastAPI application
 # ---------------------------------------------------------------------------
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: connect MCP, build LLM and graph; shutdown: clean up."""
-    settings = BrowserAgentSettings()
+    """Startup: connect to Gateway, build LLM and graph; shutdown: clean up."""
+    global _gateway_client
+
+    agent_settings = BrowserAgentSettings()
     llm_settings = LLMSettings()
 
     # AsyncPostgresSaver requires a plain postgresql:// DSN (psycopg).
-    db_url = settings.database_url.replace(
+    db_url = agent_settings.database_url.replace(
         "postgresql+asyncpg://", "postgresql://"
     )
 
-    mcp_conn = MCPConnection()
+    # Initialise Gateway client
+    _gateway_client = GatewayBrowserToolsClient(
+        gateway_url=agent_settings.gateway_url,
+        timeout=agent_settings.browser_tool_timeout,
+    )
+
+    llm = create_ollama_llm(agent_settings.browser_model, llm_settings)
+    llm_with_tools = llm.bind_tools(BROWSER_TOOLS)
 
     async with await AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
 
-        # Connect to Browser Relay MCP and load tools.
-        tools = await mcp_conn.connect(settings.browser_relay_mcp_url)
-
-        if not tools:
-            logger.warning(
-                "No tools loaded from MCP at %s -- the browser agent "
-                "will not be able to control the browser.",
-                settings.browser_relay_mcp_url,
-            )
-
-        llm = create_ollama_llm(settings.browser_model, llm_settings)
-        llm_with_tools = llm.bind_tools(tools) if tools else llm
-
         app.state.graph = build_browser_graph(
-            llm_with_tools, tools, checkpointer,
+            llm_with_tools, BROWSER_TOOLS, checkpointer
         )
-        app.state.mcp_connection = mcp_conn
 
         logger.info(
-            "Browser Agent ready -- model=%s, mcp_url=%s, tools=%d",
-            settings.browser_model,
-            settings.browser_relay_mcp_url,
-            len(tools),
+            "Browser Agent ready -- model=%s, gateway=%s, tools=%d",
+            agent_settings.browser_model,
+            agent_settings.gateway_url,
+            len(BROWSER_TOOLS),
         )
         yield
 
-    # Cleanup: close MCP connection (outside the checkpointer context).
-    await mcp_conn.disconnect()
+    _gateway_client = None
 
 
-app = FastAPI(title="Browser Agent", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Browser Agent", version="0.2.0", lifespan=lifespan)
 
 # ACP endpoints: /runs, /runs/stream, /health
 router = create_acp_router(lambda request: request.app.state.graph)

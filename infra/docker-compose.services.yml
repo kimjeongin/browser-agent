@@ -14,6 +14,7 @@ services:
       ORCHESTRATOR_URL: http://orchestrator:8001
       KEYCLOAK_REALM_URL: http://keycloak:8080/realms/browser-agent
       KEYCLOAK_AUDIENCE: browser-agent-extension
+      BROWSER_TOOL_TIMEOUT: "60"
     depends_on:
       redis:
         condition: service_healthy
@@ -65,30 +66,13 @@ services:
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       BROWSER_MODEL: qwen2.5:14b
-      BROWSER_RELAY_MCP_URL: http://browser-relay:8010/mcp
+      GATEWAY_URL: http://gateway:8000
       DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/browser_agent
+      BROWSER_TOOL_TIMEOUT: "65"
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
         condition: service_healthy
-      browser-relay:
-        condition: service_healthy
-
-  browser-relay:
-    build:
-      context: ../mcp_servers
-      dockerfile: browser_relay/Dockerfile
-    container_name: browser-agent-browser-relay
-    ports: ["8010:8010"]
-    environment:
-      REDIS_URL: redis://redis:6379/0
-    depends_on:
-      redis:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8010/health')"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 15s
+      gateway:
+        condition: service_started

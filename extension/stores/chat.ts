@@ -8,11 +8,24 @@ export type Message = {
   timestamp: number;
 };
 
+export type ToolStep = {
+  name: string;
+  status: 'running' | 'done' | 'error';
+  startedAt: number;
+};
+
 type ChatState = {
   messages: Message[];
   sessionId: string | null;
   isLoggedIn: boolean;
   isLoading: boolean;
+  // Browser control state
+  isBrowserControlling: boolean;
+  currentAction: string | null;
+  agentTabId: number | null;
+  agentTabGroupId: number | null;
+  // Tool execution steps (shown during browser control)
+  toolSteps: ToolStep[];
 
   addMessage: (msg: Omit<Message, 'id' | 'timestamp'>) => string;
   appendToMessage: (id: string, content: string) => void;
@@ -21,6 +34,12 @@ type ChatState = {
   setLoggedIn: (v: boolean) => void;
   setLoading: (v: boolean) => void;
   clearMessages: () => void;
+  // Browser control actions
+  setBrowserControlling: (v: boolean, action?: string | null) => void;
+  setAgentTab: (tabId: number | null, groupId: number | null) => void;
+  addToolStep: (name: string) => void;
+  completeToolStep: (name: string) => void;
+  clearToolSteps: () => void;
 };
 
 export const useChatStore = create<ChatState>((set) => ({
@@ -28,6 +47,11 @@ export const useChatStore = create<ChatState>((set) => ({
   sessionId: null,
   isLoggedIn: false,
   isLoading: false,
+  isBrowserControlling: false,
+  currentAction: null,
+  agentTabId: null,
+  agentTabGroupId: null,
+  toolSteps: [],
 
   addMessage: (msg) => {
     const id = crypto.randomUUID();
@@ -55,4 +79,29 @@ export const useChatStore = create<ChatState>((set) => ({
   setLoggedIn: (isLoggedIn) => set({ isLoggedIn }),
   setLoading: (isLoading) => set({ isLoading }),
   clearMessages: () => set({ messages: [] }),
+
+  setBrowserControlling: (isBrowserControlling, currentAction = null) =>
+    set({ isBrowserControlling, currentAction }),
+
+  setAgentTab: (agentTabId, agentTabGroupId) =>
+    set({ agentTabId, agentTabGroupId }),
+
+  addToolStep: (name) =>
+    set((s) => ({
+      toolSteps: [
+        ...s.toolSteps,
+        { name, status: 'running', startedAt: Date.now() },
+      ],
+    })),
+
+  completeToolStep: (name) =>
+    set((s) => ({
+      toolSteps: s.toolSteps.map((step) =>
+        step.name === name && step.status === 'running'
+          ? { ...step, status: 'done' }
+          : step,
+      ),
+    })),
+
+  clearToolSteps: () => set({ toolSteps: [] }),
 }));

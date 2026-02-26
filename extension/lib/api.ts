@@ -4,6 +4,10 @@
  * Used primarily by the background service worker to communicate with
  * the backend gateway at localhost:8000. Also used by the sidepanel
  * for SSE streaming (sidepanel has its own fetch context).
+ *
+ * v2: Updated for webMCP-inspired browser tool invocation flow.
+ *   - connectCommandsSSE: receives tool_invocation events (inv_id, tool_name, params)
+ *   - postToolResult: posts result to /browser-tools/result/{inv_id}
  */
 
 export class GatewayClient {
@@ -33,22 +37,28 @@ export class GatewayClient {
     return res.json();
   }
 
+  async getSessionStatus(sessionId: string): Promise<{
+    session_id: string;
+    browser_controlling: boolean;
+  }> {
+    const res = await fetch(
+      `${this.baseUrl}/sessions/${sessionId}/browser-status`,
+      { headers: this.headers },
+    );
+    if (!res.ok) throw new Error(`Get status failed: ${res.status}`);
+    return res.json();
+  }
+
   // ---------------------------------------------------------------------------
   // Chat - request/response
   // ---------------------------------------------------------------------------
 
-  async sendChat(
-    sessionId: string,
-    content: string,
-  ): Promise<unknown> {
-    const res = await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/chat`,
-      {
-        method: 'POST',
-        headers: this.headers,
-        body: JSON.stringify({ content }),
-      },
-    );
+  async sendChat(sessionId: string, content: string): Promise<unknown> {
+    const res = await fetch(`${this.baseUrl}/sessions/${sessionId}/chat`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({ content }),
+    });
     if (!res.ok) throw new Error(`Chat failed: ${res.status}`);
     return res.json();
   }
@@ -63,6 +73,7 @@ export class GatewayClient {
   ): AsyncGenerator<{
     type: string;
     content?: string;
+    name?: string;
     [k: string]: unknown;
   }> {
     const token = this.getToken();
@@ -103,17 +114,18 @@ export class GatewayClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Browser commands SSE channel
+  // Browser tool invocation SSE channel
   // ---------------------------------------------------------------------------
 
   /**
    * Connect to the commands SSE channel for a session.
-   * The gateway pushes browser commands (from Browser Relay MCP) over this channel.
+   * The gateway pushes browser tool invocations over this channel.
+   * Each event contains: { inv_id, tool_name, params }
    * Returns a cancel function to tear down the connection.
    */
   async connectCommandsSSE(
     sessionId: string,
-    onCommand: (cmd: unknown) => void,
+    onInvocation: (invocation: unknown) => void,
   ): Promise<() => void> {
     const token = this.getToken();
     const url = `${this.baseUrl}/sessions/${sessionId}/commands`;
@@ -139,7 +151,7 @@ export class GatewayClient {
           for (const line of chunk.split('\n')) {
             if (line.startsWith('data: ')) {
               try {
-                onCommand(JSON.parse(line.slice(6)));
+                onInvocation(JSON.parse(line.slice(6)));
               } catch {
                 /* skip malformed */
               }
@@ -157,19 +169,29 @@ export class GatewayClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Command results
+  // Browser tool results (webMCP-inspired)
   // ---------------------------------------------------------------------------
 
-  async postCommandResult(
+  /**
+   * Post the result of a browser tool execution back to the Gateway.
+   * The Gateway resolves the asyncio.Future, unblocking the Browser Agent.
+   */
+  async postToolResult(
     sessionId: string,
-    result: unknown,
+    invId: string,
+    result: { success: boolean; result?: unknown; error?: string },
   ): Promise<void> {
     await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/command-result`,
+      `${this.baseUrl}/sessions/${sessionId}/browser-tools/result/${invId}`,
       {
         method: 'POST',
         headers: this.headers,
-        body: JSON.stringify(result),
+        body: JSON.stringify({
+          inv_id: invId,
+          success: result.success,
+          result: result.result,
+          error: result.error,
+        }),
       },
     );
   }
