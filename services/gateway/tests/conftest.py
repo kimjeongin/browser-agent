@@ -10,7 +10,20 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+import main as gateway_main
 from main import app
+
+
+@pytest.fixture(autouse=True)
+def reset_module_state():
+    """Reset module-level in-memory state before each test."""
+    gateway_main._session_queues.clear()
+    gateway_main._pending_invocations.clear()
+    gateway_main._browser_controlling.clear()
+    yield
+    gateway_main._session_queues.clear()
+    gateway_main._pending_invocations.clear()
+    gateway_main._browser_controlling.clear()
 
 
 @pytest.fixture
@@ -22,24 +35,18 @@ async def gateway_client():
     Each fixture invocation starts with a clean state to prevent test pollution.
     """
     mock_redis = AsyncMock()
+    mock_redis.get = AsyncMock(return_value=None)
+    mock_redis.set = AsyncMock()
     mock_redis.aclose = AsyncMock()
 
-    # Manually initialise the state that the lifespan would normally create
     app.state.verifier = MagicMock()
     app.state.redis = mock_redis
     app.state.acp = MagicMock()
-    app.state.session_queues = {}
-    app.state.pending_invocations = {}
-    app.state.browser_tool_manifests = {}
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
 
-    # Cleanup: prevent state from leaking into subsequent tests
-    for key in (
-        "verifier", "redis", "acp",
-        "session_queues", "pending_invocations", "browser_tool_manifests",
-    ):
+    for key in ("verifier", "redis", "acp"):
         app.state._state.pop(key, None)

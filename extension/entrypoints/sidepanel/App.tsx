@@ -3,6 +3,30 @@ import { useChatStore } from '../../stores/chat';
 import { config } from '../../lib/config';
 
 // ---------------------------------------------------------------------------
+// Tool name → user-friendly Korean label
+// ---------------------------------------------------------------------------
+
+const TOOL_LABELS: Record<string, string> = {
+  navigate: '페이지 이동 중',
+  click: '클릭 중',
+  type: '입력 중',
+  scroll: '스크롤 중',
+  screenshot: '스크린샷 촬영 중',
+  extract_content: '내용 추출 중',
+  wait_for_element: '요소 대기 중',
+  evaluate_js: 'JS 실행 중',
+  get_page_info: '페이지 정보 조회 중',
+  browser_navigate: '페이지 이동 중',
+  browser_click: '클릭 중',
+  browser_type: '입력 중',
+  browser_scroll: '스크롤 중',
+  browser_screenshot: '스크린샷 촬영 중',
+  browser_extract_content: '내용 추출 중',
+  browser_wait_for_element: '요소 대기 중',
+  browser_evaluate_js: 'JS 실행 중',
+};
+
+// ---------------------------------------------------------------------------
 // Login Screen
 // ---------------------------------------------------------------------------
 
@@ -30,7 +54,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   return (
     <div className="flex flex-col items-center justify-center h-full gap-6 p-8 bg-gray-950 text-white">
       <div className="text-center">
-        <div className="text-4xl mb-3">&#x1f916;</div>
+        <div className="text-4xl mb-3">🤖</div>
         <h1 className="text-xl font-bold">AI Browser Assistant</h1>
         <p className="text-gray-400 text-sm mt-2">Sign in to get started</p>
       </div>
@@ -46,6 +70,70 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
       >
         {loading ? 'Signing in...' : 'Sign in with Keycloak'}
       </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Browser Control Banner
+// ---------------------------------------------------------------------------
+
+function BrowserControlBanner({
+  action,
+  onFocusTab,
+}: {
+  action: string | null;
+  onFocusTab: () => void;
+}) {
+  const label = action ? (TOOL_LABELS[action] ?? `${action} 실행 중`) : '브라우저 제어 중';
+
+  return (
+    <div className="flex items-center gap-2 px-4 py-2 bg-blue-600/20 border-b border-blue-500/30 text-blue-300 text-xs">
+      {/* Pulsing dot */}
+      <span className="relative flex h-2 w-2 shrink-0">
+        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75" />
+        <span className="relative inline-flex rounded-full h-2 w-2 bg-blue-500" />
+      </span>
+      <span className="flex-1 font-medium">{label}</span>
+      <button
+        onClick={onFocusTab}
+        className="text-blue-400 hover:text-blue-200 underline transition-colors ml-auto shrink-0"
+      >
+        탭 보기
+      </button>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Tool Step Indicator (shows recent tool executions)
+// ---------------------------------------------------------------------------
+
+function ToolStepList({
+  steps,
+}: {
+  steps: { name: string; status: 'running' | 'done' | 'error' }[];
+}) {
+  if (steps.length === 0) return null;
+
+  const recent = steps.slice(-5); // show last 5 steps
+
+  return (
+    <div className="px-4 py-2 bg-gray-900/50 border-b border-gray-800 space-y-1">
+      {recent.map((step, i) => (
+        <div key={i} className="flex items-center gap-2 text-xs text-gray-400">
+          {step.status === 'running' && (
+            <span className="w-3 h-3 border border-blue-400 border-t-transparent rounded-full animate-spin shrink-0" />
+          )}
+          {step.status === 'done' && (
+            <span className="text-green-400 shrink-0">✓</span>
+          )}
+          {step.status === 'error' && (
+            <span className="text-red-400 shrink-0">✗</span>
+          )}
+          <span>{TOOL_LABELS[step.name] ?? step.name}</span>
+        </div>
+      ))}
     </div>
   );
 }
@@ -88,12 +176,20 @@ export default function App() {
     sessionId,
     isLoggedIn,
     isLoading,
+    isBrowserControlling,
+    currentAction,
+    toolSteps,
     addMessage,
     appendToMessage,
     finalizeMessage,
     setSession,
     setLoggedIn,
     setLoading,
+    setBrowserControlling,
+    setAgentTab,
+    addToolStep,
+    completeToolStep,
+    clearToolSteps,
   } = useChatStore();
 
   const [input, setInput] = useState('');
@@ -106,17 +202,44 @@ export default function App() {
         const data = result.data as {
           sessionId: string | null;
           isLoggedIn: boolean;
+          agentTabId: number | null;
+          agentTabGroupId: number | null;
         };
         setLoggedIn(data.isLoggedIn);
         if (data.sessionId) setSession(data.sessionId);
+        setAgentTab(data.agentTabId, data.agentTabGroupId);
       }
     });
-  }, [setLoggedIn, setSession]);
+  }, [setLoggedIn, setSession, setAgentTab]);
+
+  // Listen for browser control status messages from background
+  useEffect(() => {
+    const listener = (message: {
+      type: string;
+      controlling?: boolean;
+      action?: string;
+      tabInfo?: { tabId: number; tabGroupId: number };
+    }) => {
+      if (message.type === 'BROWSER_CONTROL_STATUS') {
+        setBrowserControlling(message.controlling ?? false, message.action);
+        if (message.tabInfo) {
+          setAgentTab(message.tabInfo.tabId, message.tabInfo.tabGroupId);
+        }
+        if (!message.controlling) {
+          // Keep tool steps visible briefly then clear
+          setTimeout(clearToolSteps, 2000);
+        }
+      }
+    };
+
+    browser.runtime.onMessage.addListener(listener);
+    return () => browser.runtime.onMessage.removeListener(listener);
+  }, [setBrowserControlling, setAgentTab, clearToolSteps]);
 
   // Auto-scroll to latest message
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [messages]);
+  }, [messages, toolSteps]);
 
   const handleLogin = useCallback(() => {
     browser.runtime.sendMessage({ type: 'GET_SESSION' }).then((result) => {
@@ -124,18 +247,22 @@ export default function App() {
         const data = result.data as {
           sessionId: string | null;
           isLoggedIn: boolean;
+          agentTabId: number | null;
+          agentTabGroupId: number | null;
         };
         setLoggedIn(data.isLoggedIn);
         if (data.sessionId) setSession(data.sessionId);
+        setAgentTab(data.agentTabId, data.agentTabGroupId);
       }
     });
-  }, [setLoggedIn, setSession]);
+  }, [setLoggedIn, setSession, setAgentTab]);
 
   const handleSend = async () => {
     if (!input.trim() || !sessionId || isLoading) return;
     const content = input.trim();
     setInput('');
     setLoading(true);
+    clearToolSteps();
 
     addMessage({ role: 'user', content });
 
@@ -146,7 +273,6 @@ export default function App() {
     });
 
     try {
-      // Get token from background for the SSE request
       const tokenResult = await browser.runtime.sendMessage({
         type: 'GET_ACCESS_TOKEN',
       });
@@ -180,8 +306,21 @@ export default function App() {
             if (line.startsWith('data: ')) {
               try {
                 const event = JSON.parse(line.slice(6));
+
                 if (event.type === 'token' && event.content) {
                   appendToMessage(aiMsgId, event.content);
+                } else if (event.type === 'tool_start' && event.name) {
+                  // Show tool execution in the step list
+                  addToolStep(event.name);
+                  // If it's a browser tool, mark as controlling
+                  if (event.name.startsWith('browser_') || event.name === 'get_page_info') {
+                    setBrowserControlling(true, event.name);
+                  }
+                } else if (event.type === 'tool_end' && event.name) {
+                  completeToolStep(event.name);
+                  if (event.name.startsWith('browser_') || event.name === 'get_page_info') {
+                    setBrowserControlling(false);
+                  }
                 }
               } catch {
                 /* skip malformed SSE data */
@@ -195,6 +334,7 @@ export default function App() {
     } finally {
       finalizeMessage(aiMsgId);
       setLoading(false);
+      setBrowserControlling(false);
     }
   };
 
@@ -202,6 +342,13 @@ export default function App() {
     browser.runtime.sendMessage({ type: 'LOGOUT' });
     setLoggedIn(false);
     setSession(null);
+    setAgentTab(null, null);
+    setBrowserControlling(false);
+    clearToolSteps();
+  };
+
+  const handleFocusAgentTab = () => {
+    browser.runtime.sendMessage({ type: 'FOCUS_AGENT_TAB' });
   };
 
   if (!isLoggedIn) {
@@ -211,9 +358,9 @@ export default function App() {
   return (
     <div className="flex flex-col h-screen bg-gray-950 text-white">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-gray-800 shrink-0">
         <div className="flex items-center gap-2">
-          <span className="text-lg">&#x1f916;</span>
+          <span className="text-lg">🤖</span>
           <span className="font-semibold text-sm">AI Assistant</span>
         </div>
         <button
@@ -224,12 +371,31 @@ export default function App() {
         </button>
       </div>
 
+      {/* Browser Control Banner */}
+      {isBrowserControlling && (
+        <BrowserControlBanner
+          action={currentAction}
+          onFocusTab={handleFocusAgentTab}
+        />
+      )}
+
+      {/* Tool Steps (shown during execution) */}
+      {toolSteps.length > 0 && (
+        <ToolStepList steps={toolSteps} />
+      )}
+
       {/* Messages */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="flex-1 overflow-y-auto p-4 min-h-0">
         {messages.length === 0 && (
           <div className="flex flex-col items-center justify-center h-full text-gray-500 gap-3">
-            <span className="text-3xl">&#x1f4ac;</span>
-            <p className="text-sm">How can I help you today?</p>
+            <span className="text-3xl">💬</span>
+            <p className="text-sm text-center">
+              무엇이든 물어보세요!
+              <br />
+              <span className="text-xs text-gray-600">
+                예: "유튜브에서 아이유 검색해서 최신 음악 틀어줘"
+              </span>
+            </p>
           </div>
         )}
         {messages.map((msg) => (
@@ -239,7 +405,7 @@ export default function App() {
       </div>
 
       {/* Input */}
-      <div className="p-4 border-t border-gray-800">
+      <div className="p-4 border-t border-gray-800 shrink-0">
         <div className="flex gap-2">
           <textarea
             value={input}

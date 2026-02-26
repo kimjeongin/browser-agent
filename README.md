@@ -6,51 +6,36 @@ WXT 브라우저 확장 + 멀티 에이전트 AI 백엔드로 구성된 AI 챗�
 
 ## 아키텍처 개요
 
-webMCP-inspired 아키텍처. Extension이 브라우저 도구 제공자 역할을 하고, Gateway가 도구 브로커 역할을 한다.
-
 ```
 Extension (WXT/Chrome) ──Bearer JWT──▶ Gateway :8000
-                       ◀──SSE chat──
-                       ◀──SSE tool_invocation──
-                       ──POST tool result──▶
+                       ◀──SSE chat stream──
+                       ◀──SSE browser commands──
 
 Gateway :8000 ──ACP──▶ Orchestrator :8001
                             ├──ACP──▶ Chat Agent :8002
                             └──ACP──▶ Browser Agent :8003
 
 Browser Agent :8003 ──POST /browser-tools/invoke──▶ Gateway :8000
-                                                         │ asyncio.Queue (SSE push)
-                                                         ▼
-                                                   Extension BG SW
-                                                   (BrowserToolRegistry.invoke)
-                                                         │ DOM 액션
-                                                         ▼
-                                                   Extension Content Script
-                                                         │
-                                                   POST /browser-tools/result
-                                                         ▼
-                                                   Gateway (asyncio.Future resolved)
-                                                         │
-                                                   Browser Agent (결과 수신)
+Gateway :8000 ──asyncio.Queue──▶ SSE /commands──▶ Extension
+Extension ──POST /browser-tools/result/{inv_id}──▶ Gateway :8000
 ```
 
-**구 아키텍처 대비 단순화 (7홉 → 3홉)**
+### webMCP-inspired 브라우저 제어 흐름 (3-hop)
 
-| 항목 | 구버전 | 신버전 |
-|------|--------|--------|
-| 브라우저 도구 서비스 | Browser Relay MCP (:8010) 별도 프로세스 | 제거 (Gateway가 도구 브로커) |
-| 브라우저 명령 중계 | Redis Pub/Sub | asyncio.Queue + asyncio.Future |
-| 브라우저 도구 프로토콜 | MCP over streamable-HTTP | webMCP-inspired HTTP REST |
+1. Browser Agent가 `POST /sessions/{id}/browser-tools/invoke` 호출 (blocking, 60s)
+2. Gateway가 `asyncio.Queue`에 tool invocation 이벤트 추가 → SSE로 Extension push
+3. Extension이 DOM 액션 실행 후 `POST /sessions/{id}/browser-tools/result/{inv_id}` 호출
+4. Gateway `asyncio.Future.set_result()` → Browser Agent 응답 반환
 
 ### 컴포넌트 역할
 
 | 컴포넌트 | 포트 | 역할 | 기술 스택 |
 |----------|------|------|-----------|
-| Extension | — | 사용자 UI, BrowserToolRegistry, DOM 제어 | WXT, React 19, Tailwind v4, Zustand |
-| Gateway | 8000 | 진입점, SSE 허브, webMCP 도구 브로커, JWT 검증 | FastAPI |
+| Extension | — | 사용자 UI, DOM 제어 | WXT, React 19, Tailwind v4, Zustand |
+| Gateway | 8000 | 진입점, SSE 허브, JWT 검증, 브라우저 도구 브로커 | FastAPI, Redis |
 | Orchestrator | 8001 | 의도 분류, 에이전트 라우팅 | FastAPI, LangGraph |
 | Chat Agent | 8002 | 웹 검색, 일반 대화 | FastAPI, LangGraph, DuckDuckGo |
-| Browser Agent | 8003 | DOM 제어 (HTTP → Gateway → Extension) | FastAPI, LangGraph |
+| Browser Agent | 8003 | DOM 제어 | FastAPI, LangGraph, httpx |
 | Keycloak | 8080 | JWT 발급, PKCE | Keycloak 26 |
 | PostgreSQL | 5432 | DB, LangGraph 체크포인트 | pgvector/pgvector:pg16 |
 | Redis | 6379 | 세션 캐시 | Redis 7 |
@@ -69,7 +54,7 @@ Browser Agent :8003 ──POST /browser-tools/invoke──▶ Gateway :8000
 Ollama 모델을 미리 pull한다:
 
 ```bash
-ollama pull llama3.1:8b      # Orchestrator
+ollama pull llama3.1:8b      # Orchestrator (의도 분류)
 ollama pull qwen2.5:7b       # Chat Agent
 ollama pull qwen2.5:14b      # Browser Agent
 ```
@@ -124,6 +109,7 @@ pnpm build
 | `CHAT_MODEL` | Chat Agent | `qwen2.5:7b` |
 | `BROWSER_MODEL` | Browser Agent | `qwen2.5:14b` |
 | `GATEWAY_URL` | Browser Agent | `http://gateway:8000` |
+| `BROWSER_TOOL_TIMEOUT` | Gateway, Browser Agent | `60.0` / `65.0` |
 
 ### Extension (`extension/.env`)
 
@@ -147,6 +133,19 @@ uv pip install -e ../shared -e .
 uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ```
 
+### 테스트 실행
+
+```bash
+# Gateway 테스트
+cd services/gateway && uv run pytest
+
+# Browser Agent 테스트
+cd services/browser_agent && uv run pytest
+
+# Extension 테스트
+cd extension && pnpm test
+```
+
 ---
 
 ## 프로젝트 구조
@@ -155,21 +154,17 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 browser-agent/
 ├── extension/                  # WXT 브라우저 확장
 │   ├── entrypoints/
-│   │   ├── background.ts       # PKCE 인증, 도구 등록, 도구 호출 SSE 수신
+│   │   ├── background.ts       # PKCE 인증, 명령 SSE 수신, 탭 그룹 관리
 │   │   ├── content.ts          # DOM 액션 실행
-│   │   └── sidepanel/          # 채팅 UI (React)
-│   ├── lib/
-│   │   ├── browser-tools.ts    # BrowserToolRegistry (webMCP-style, 9개 도구)
-│   │   ├── api.ts              # GatewayClient (HTTP/SSE)
-│   │   ├── auth.ts             # PKCE 유틸리티
-│   │   └── config.ts           # 설정
+│   │   └── sidepanel/          # 채팅 UI (React) + 브라우저 제어 상태 표시
+│   ├── lib/                    # API 클라이언트, 인증 유틸
 │   └── stores/                 # Zustand 상태 저장소
 ├── services/
 │   ├── shared/                 # 공유 패키지 (auth, acp, llm, models)
-│   ├── gateway/                # 진입점 서비스 + webMCP 도구 브로커
+│   ├── gateway/                # 진입점 서비스 + 브라우저 도구 브로커
 │   ├── ochestrator/            # 슈퍼바이저 에이전트
 │   ├── chat_agent/             # 웹 검색 에이전트
-│   └── browser_agent/          # 브라우저 제어 에이전트 (HTTP 도구)
+│   └── browser_agent/          # 브라우저 제어 에이전트
 ├── mcp_servers/
 │   └── web_search/             # 웹 검색 MCP 서버 (stdio, Chat Agent용)
 └── infra/
@@ -185,10 +180,12 @@ browser-agent/
 
 | 결정 | 이유 |
 |------|------|
-| webMCP-inspired 아키텍처 | Extension이 도구 제공자, Gateway가 브로커. 홉 수 7→3 감소. Browser Relay MCP 별도 프로세스 제거 |
-| asyncio.Queue + asyncio.Future | Redis Pub/Sub 대체. 단일 Gateway 인스턴스에서 코드 단순화. 스케일아웃 필요 시 Redis Queue/Future로 교체 가능 |
 | SSE (WebSocket 아님) | Chrome Extension Service Worker에서 `EventSource` 미지원. `fetch` + `ReadableStream` 사용 |
+| asyncio.Queue + asyncio.Future | 브라우저 도구 조율을 단일 Gateway 인스턴스 내에서 처리. Redis Pub/Sub보다 단순하고 오버헤드 없음 |
+| Gateway 직접 HTTP (MCP 서버 없음) | Browser Agent → Gateway 직접 호출로 중간 계층 제거. 3홉으로 충분 |
 | ACP 프로토콜 (HTTP POST) | 에이전트 간 표준 인터페이스. 각 서비스가 독립적으로 배포/스케일 가능 |
+| session_id = thread_id | Browser Agent가 session 단위로 LangGraph 체크포인트를 유지해 멀티턴 대화 지원 |
 | Keycloak PKCE | Extension은 `client_secret` 안전 보관 불가 → Public client + PKCE S256 강제 |
 | Access Token 메모리 저장 | `localStorage`/`sessionStorage`는 XSS 취약. Service Worker 메모리만 사용 |
+| Chrome Tab Groups API | AI 제어 탭을 "AI Assistant" 그룹으로 격리해 사용자가 시각적으로 구분 가능 |
 | psycopg (LangGraph 체크포인터) | `langgraph-checkpoint-postgres`가 asyncpg가 아닌 psycopg를 요구 |

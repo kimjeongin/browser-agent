@@ -4,15 +4,11 @@
  * Used primarily by the background service worker to communicate with
  * the backend gateway at localhost:8000. Also used by the sidepanel
  * for SSE streaming (sidepanel has its own fetch context).
+ *
+ * v2: Updated for webMCP-inspired browser tool invocation flow.
+ *   - connectCommandsSSE: receives tool_invocation events (inv_id, tool_name, params)
+ *   - postToolResult: posts result to /browser-tools/result/{inv_id}
  */
-
-import type { BrowserToolDefinition, ToolResult } from './browser-tools';
-
-/** Typed SSE event as parsed from the commands channel. */
-export interface SSEEvent {
-  type: string;
-  data: unknown;
-}
 
 export class GatewayClient {
   constructor(
@@ -41,22 +37,28 @@ export class GatewayClient {
     return res.json();
   }
 
+  async getSessionStatus(sessionId: string): Promise<{
+    session_id: string;
+    browser_controlling: boolean;
+  }> {
+    const res = await fetch(
+      `${this.baseUrl}/sessions/${sessionId}/browser-status`,
+      { headers: this.headers },
+    );
+    if (!res.ok) throw new Error(`Get status failed: ${res.status}`);
+    return res.json();
+  }
+
   // ---------------------------------------------------------------------------
   // Chat - request/response
   // ---------------------------------------------------------------------------
 
-  async sendChat(
-    sessionId: string,
-    content: string,
-  ): Promise<unknown> {
-    const res = await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/chat`,
-      {
-        method: 'POST',
-        headers: this.headers,
-        body: JSON.stringify({ content }),
-      },
-    );
+  async sendChat(sessionId: string, content: string): Promise<unknown> {
+    const res = await fetch(`${this.baseUrl}/sessions/${sessionId}/chat`, {
+      method: 'POST',
+      headers: this.headers,
+      body: JSON.stringify({ content }),
+    });
     if (!res.ok) throw new Error(`Chat failed: ${res.status}`);
     return res.json();
   }
@@ -71,6 +73,7 @@ export class GatewayClient {
   ): AsyncGenerator<{
     type: string;
     content?: string;
+    name?: string;
     [k: string]: unknown;
   }> {
     const token = this.getToken();
@@ -111,21 +114,18 @@ export class GatewayClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Browser commands SSE channel (typed events)
+  // Browser tool invocation SSE channel
   // ---------------------------------------------------------------------------
 
   /**
    * Connect to the commands SSE channel for a session.
-   *
-   * The gateway pushes typed SSE events over this channel. Each event has an
-   * optional `event:` field (the type) and a `data:` field (JSON payload).
-   * If no `event:` field is present, the type defaults to "message".
-   *
+   * The gateway pushes browser tool invocations over this channel.
+   * Each event contains: { inv_id, tool_name, params }
    * Returns a cancel function to tear down the connection.
    */
   async connectCommandsSSE(
     sessionId: string,
-    onEvent: (event: SSEEvent) => void,
+    onInvocation: (invocation: unknown) => void,
   ): Promise<() => void> {
     const token = this.getToken();
     const url = `${this.baseUrl}/sessions/${sessionId}/commands`;
@@ -145,32 +145,17 @@ export class GatewayClient {
         const { done, value } = await reader.read();
         if (done) break;
         buffer += decoder.decode(value, { stream: true });
-
-        // SSE frames are separated by double newlines
-        const frames = buffer.split('\n\n');
-        buffer = frames.pop() ?? '';
-
-        for (const frame of frames) {
-          let eventType = 'message';
-          let dataStr = '';
-
-          for (const line of frame.split('\n')) {
-            if (line.startsWith('event: ')) {
-              eventType = line.slice(7).trim();
-            } else if (line.startsWith('data: ')) {
-              // Accumulate data lines (SSE spec allows multiple data: lines)
-              dataStr += (dataStr ? '\n' : '') + line.slice(6);
+        const lines = buffer.split('\n\n');
+        buffer = lines.pop() ?? '';
+        for (const chunk of lines) {
+          for (const line of chunk.split('\n')) {
+            if (line.startsWith('data: ')) {
+              try {
+                onInvocation(JSON.parse(line.slice(6)));
+              } catch {
+                /* skip malformed */
+              }
             }
-            // Ignore id:, retry:, and comment lines
-          }
-
-          if (!dataStr) continue;
-
-          try {
-            const data = JSON.parse(dataStr);
-            onEvent({ type: eventType, data });
-          } catch {
-            /* skip frames with non-JSON data (e.g. keepalive pings) */
           }
         }
       }
@@ -184,56 +169,30 @@ export class GatewayClient {
   }
 
   // ---------------------------------------------------------------------------
-  // Browser tool registration (webMCP-style)
+  // Browser tool results (webMCP-inspired)
   // ---------------------------------------------------------------------------
 
   /**
-   * Register this extension's browser tool manifest with the Gateway.
-   * The Gateway stores these definitions so the backend agents know
-   * which tools are available in the connected browser.
-   */
-  async registerBrowserTools(
-    sessionId: string,
-    tools: BrowserToolDefinition[],
-  ): Promise<void> {
-    const res = await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/browser-tools/register`,
-      {
-        method: 'POST',
-        headers: this.headers,
-        body: JSON.stringify({ tools }),
-      },
-    );
-    if (!res.ok) {
-      throw new Error(`Register browser tools failed: ${res.status}`);
-    }
-  }
-
-  // ---------------------------------------------------------------------------
-  // Tool invocation results
-  // ---------------------------------------------------------------------------
-
-  /**
-   * Report the result of a tool invocation back to the Gateway.
-   * The Gateway forwards this to the Browser Relay MCP server so the
-   * requesting agent receives the tool output.
+   * Post the result of a browser tool execution back to the Gateway.
+   * The Gateway resolves the asyncio.Future, unblocking the Browser Agent.
    */
   async postToolResult(
     sessionId: string,
-    invocationId: string,
-    result: ToolResult,
+    invId: string,
+    result: { success: boolean; result?: unknown; error?: string },
   ): Promise<void> {
-    const res = await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/browser-tools/result/${invocationId}`,
+    await fetch(
+      `${this.baseUrl}/sessions/${sessionId}/browser-tools/result/${invId}`,
       {
         method: 'POST',
         headers: this.headers,
-        body: JSON.stringify(result),
+        body: JSON.stringify({
+          inv_id: invId,
+          success: result.success,
+          result: result.result,
+          error: result.error,
+        }),
       },
     );
-    if (!res.ok) {
-      throw new Error(`Post tool result failed: ${res.status}`);
-    }
   }
-
 }

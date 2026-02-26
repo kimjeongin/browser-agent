@@ -7,8 +7,8 @@
 - Keycloak JWKS JWT 검증 로직과 FastAPI 의존성을 제공한다.
 - ACP 서버 라우터와 ACP HTTP 클라이언트를 제공한다.
 - ChatOllama 팩토리 함수와 공통 LLM 설정을 제공한다.
-- 도메인 Pydantic 모델(`Session`, `BrowserCommand`, `CommandResult`)을 정의한다.
-- Redis 키 네임스페이스 빌더 함수를 중앙화한다.
+- 도메인 Pydantic 모델(`Session`)을 정의한다.
+- Redis 클라이언트 싱글턴과 키 네임스페이스 빌더를 제공한다.
 
 ## 모듈 목록
 
@@ -17,8 +17,8 @@
 | `shared.auth` | `jwt_verifier.py`, `dependencies.py` | Keycloak JWKS JWT 검증, FastAPI 의존성 |
 | `shared.acp` | `server.py`, `client.py` | ACP 서버 라우터 팩토리, ACP HTTP 클라이언트 |
 | `shared.llm` | `factory.py`, `settings.py` | ChatOllama 팩토리, LLM 공통 설정 |
-| `shared.models` | `session.py`, `browser_command.py` | `Session`, `BrowserCommand`, `CommandResult` Pydantic 모델 |
-| `shared.redis` | `keys.py` | Redis 키 네임스페이스 빌더 함수 |
+| `shared.models` | `session.py` | `Session` Pydantic 모델 |
+| `shared.redis` | `client.py`, `keys.py` | Redis 클라이언트 싱글턴, 키 네임스페이스 빌더 |
 
 ---
 
@@ -134,47 +134,34 @@ Redis에 JSON 직렬화되어 저장되는 세션 도메인 모델.
 | `created_at` | datetime | 세션 생성 시각 (UTC) |
 | `last_activity` | datetime | 마지막 활동 시각 (UTC) |
 
-#### `BrowserCommand` (`browser_command.py`)
-
-Browser Relay MCP가 Redis에 게시하는 브라우저 명령.
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `command_id` | string | 명령 식별자 |
-| `session_id` | string | 세션 식별자 |
-| `action` | Literal | `navigate` \| `click` \| `type` \| `scroll` \| `screenshot` \| `extract_content` \| `wait_for_element` \| `evaluate_js` \| `get_page_info` |
-| `params` | dict | action별 파라미터 |
-
-#### `CommandResult` (`browser_command.py`)
-
-Extension이 Gateway에 제출하는 명령 실행 결과.
-
-| 필드 | 타입 | 설명 |
-|------|------|------|
-| `command_id` | string | 명령 식별자 |
-| `success` | boolean | 실행 성공 여부 |
-| `result` | any | 실행 결과 (선택) |
-| `error` | string \| null | 오류 메시지 (실패 시) |
-| `screenshot` | string \| null | base64 PNG (선택) |
-
 ---
 
 ### `shared.redis`
 
-Redis 키 네임스페이스 빌더 함수. 서비스마다 키 문자열을 하드코딩하지 않도록 중앙화한다.
+#### `session_key(session_id)` (`keys.py`)
+
+Redis 키 네임스페이스 빌더. 서비스마다 키 문자열을 하드코딩하지 않도록 중앙화한다.
 
 | 함수 | 반환 패턴 | 설명 |
 |------|---------|------|
-| `session_key(session_id)` | `session:{session_id}` | 세션 메타데이터 String 키 |
-| `browser_cmd_channel(session_id)` | `browser_cmd:{session_id}` | 브라우저 명령 Pub/Sub 채널 |
-| `browser_result_channel(command_id)` | `browser_result:{command_id}` | 명령 결과 Pub/Sub 채널 |
-| `browser_result_cache_key(command_id)` | `browser_result_cache:{command_id}` | 명령 결과 캐시 String 키 (TTL 5초) |
+| `session_key(session_id)` | `session:{session_id}` | 세션 메타데이터 String 키 (TTL 24h) |
 
 ```python
-from shared.redis.keys import browser_cmd_channel, session_key
+from shared.redis.keys import session_key
 
-await redis.publish(browser_cmd_channel(session_id), command_json)
 raw = await redis.get(session_key(session_id))
+```
+
+#### `get_redis` / `close_redis` (`client.py`)
+
+Redis 비동기 클라이언트 싱글턴. 앱 lifespan에서 한 번 초기화하고 shutdown 시 닫는다.
+
+```python
+from shared.redis.client import get_redis, close_redis
+
+redis = await get_redis(redis_url)
+# ... use redis
+await close_redis()
 ```
 
 ## 설치 방법
@@ -220,9 +207,9 @@ services/shared/
         │   └── settings.py    # LLMSettings
         ├── models/
         │   ├── __init__.py
-        │   ├── browser_command.py  # BrowserCommand, CommandResult
-        │   └── session.py          # Session, SessionCreate
+        │   └── session.py     # Session, SessionCreate
         └── redis/
             ├── __init__.py
-            └── keys.py        # 키 네임스페이스 빌더 함수
+            ├── client.py      # get_redis, close_redis
+            └── keys.py        # session_key
 ```

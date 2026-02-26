@@ -1,9 +1,6 @@
 import { config } from '@/lib/config';
 import { generateRandomString, generateCodeChallenge } from '@/lib/auth';
 import { GatewayClient } from '@/lib/api';
-import type { SSEEvent } from '@/lib/api';
-import { browserToolRegistry } from '@/lib/browser-tools';
-import type { ToolInvocation } from '@/lib/browser-tools';
 
 // ---------------------------------------------------------------------------
 // Token & session state (in-memory -- most secure for extensions)
@@ -14,6 +11,110 @@ let _tokenExpiry: number | null = null;
 let _sessionId: string | null = null;
 let _cancelCommands: (() => void) | null = null;
 
+// ---------------------------------------------------------------------------
+// AI Tab Group management
+// AI-controlled tabs are kept in a dedicated Chrome tab group.
+// This lets users visually distinguish AI tabs from their own.
+// ---------------------------------------------------------------------------
+
+let _agentTabGroupId: number | null = null; // Chrome tab group for AI tabs
+let _agentTabId: number | null = null; // Current AI-controlled tab
+
+/**
+ * Get or create the AI-controlled tab group.
+ * The group is titled "AI Assistant" with a blue color.
+ */
+async function getOrCreateAgentTabGroup(): Promise<number> {
+  // Check if the group still exists
+  if (_agentTabGroupId !== null) {
+    try {
+      const group = await browser.tabGroups.get(_agentTabGroupId);
+      if (group) return _agentTabGroupId;
+    } catch {
+      // Group was closed
+      _agentTabGroupId = null;
+      _agentTabId = null;
+    }
+  }
+
+  // Create a new tab for the AI (start with about:blank)
+  const tab = await browser.tabs.create({
+    url: 'about:blank',
+    active: false,
+  });
+  _agentTabId = tab.id!;
+
+  // Group the tab
+  const groupId = await browser.tabs.group({ tabIds: [_agentTabId] });
+  _agentTabGroupId = groupId;
+
+  // Style the group
+  await browser.tabGroups.update(groupId, {
+    title: 'AI Assistant',
+    color: 'blue',
+    collapsed: false,
+  });
+
+  return groupId;
+}
+
+/**
+ * Ensure there is an AI tab to execute commands on.
+ * Creates a new tab in the AI group if needed.
+ */
+async function ensureAgentTab(): Promise<number> {
+  // Check if the current AI tab is still valid
+  if (_agentTabId !== null) {
+    try {
+      const tab = await browser.tabs.get(_agentTabId);
+      if (tab && tab.id) return _agentTabId;
+    } catch {
+      _agentTabId = null;
+    }
+  }
+
+  // Create the group (which also creates a tab)
+  await getOrCreateAgentTabGroup();
+  return _agentTabId!;
+}
+
+/**
+ * Navigate the AI tab to a URL, creating the tab group if needed.
+ * Called for 'navigate' commands before routing to content script.
+ */
+async function navigateAgentTab(url: string): Promise<void> {
+  await getOrCreateAgentTabGroup();
+
+  if (_agentTabId !== null) {
+    // Navigate and focus the AI tab so users can see what's happening
+    await browser.tabs.update(_agentTabId, { url, active: true });
+  }
+}
+
+/**
+ * Handle a screenshot command using chrome.tabs.captureVisibleTab
+ * (must run from background, not content script).
+ */
+async function captureAgentTabScreenshot(): Promise<{ screenshot: string }> {
+  const tabId = await ensureAgentTab();
+  const tab = await browser.tabs.get(tabId);
+  const windowId = tab.windowId;
+
+  // Make the AI tab active first
+  await browser.tabs.update(tabId, { active: true });
+  // Small delay to ensure the tab is rendered
+  await new Promise((r) => setTimeout(r, 300));
+
+  const dataUrl = await browser.tabs.captureVisibleTab(windowId!, {
+    format: 'png',
+  });
+  return { screenshot: dataUrl };
+}
+
+// ---------------------------------------------------------------------------
+// Token helpers
+// ---------------------------------------------------------------------------
+
 function setTokens(
   accessToken: string,
   expiresIn: number,
@@ -21,13 +122,11 @@ function setTokens(
 ) {
   _accessToken = accessToken;
   _tokenExpiry = Date.now() + expiresIn * 1000;
-  // Store refresh token in session storage (cleared on browser restart)
   browser.storage.session.set({ refreshToken });
 }
 
 function getAccessToken(): string | null {
   if (!_accessToken || !_tokenExpiry) return null;
-  // Treat token as expired 60s early to avoid race conditions
   if (Date.now() >= _tokenExpiry - 60_000) return null;
   return _accessToken;
 }
@@ -47,7 +146,6 @@ async function login(): Promise<{
     const challenge = await generateCodeChallenge(verifier);
     const state = generateRandomString(16);
 
-    // Persist verifier keyed by state (needed after redirect)
     await browser.storage.session.set({ [`pkce_${state}`]: verifier });
 
     const authUrl = new URL(
@@ -78,12 +176,10 @@ async function login(): Promise<{
     if (!code || returnedState !== state)
       throw new Error('Invalid auth response');
 
-    // Retrieve and consume PKCE verifier
     const stored = await browser.storage.session.get(`pkce_${state}`);
     const codeVerifier = stored[`pkce_${state}`] as string;
     await browser.storage.session.remove(`pkce_${state}`);
 
-    // Exchange authorization code for tokens
     const tokenRes = await fetch(
       `${config.keycloakRealmUrl}/protocol/openid-connect/token`,
       {
@@ -104,18 +200,10 @@ async function login(): Promise<{
 
     setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
 
-    // Create a gateway session
     const session = await gateway.createSession();
     _sessionId = session.session_id;
     await browser.storage.local.set({ sessionId: _sessionId });
 
-    // Register browser tool manifest with Gateway (webMCP-style)
-    await gateway.registerBrowserTools(
-      _sessionId,
-      browserToolRegistry.getManifest(),
-    );
-
-    // Start listening for tool invocations via SSE
     await startCommandsListener();
 
     return { success: true };
@@ -161,8 +249,35 @@ async function logout() {
   _sessionId = null;
   _cancelCommands?.();
   _cancelCommands = null;
+  _agentTabGroupId = null;
+  _agentTabId = null;
   await browser.storage.session.remove('refreshToken');
   await browser.storage.local.remove('sessionId');
+}
+
+// ---------------------------------------------------------------------------
+// Browser control status notification
+// ---------------------------------------------------------------------------
+
+/**
+ * Notify all extension UI contexts (sidepanel, popup) about browser
+ * control state changes so they can display appropriate status indicators.
+ */
+async function notifyBrowserControlStatus(
+  controlling: boolean,
+  action?: string,
+  tabInfo?: { tabId: number; tabGroupId: number },
+) {
+  try {
+    await browser.runtime.sendMessage({
+      type: 'BROWSER_CONTROL_STATUS',
+      controlling,
+      action,
+      tabInfo,
+    });
+  } catch {
+    // Sidepanel may not be open -- ignore
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -173,46 +288,116 @@ async function startCommandsListener() {
   if (!_sessionId) return;
   _cancelCommands?.();
 
-  const sessionId = _sessionId;
-
   _cancelCommands = await gateway.connectCommandsSSE(
-    sessionId,
-    async (event: SSEEvent) => {
-      if (event.type !== 'tool_invocation') return;
+    _sessionId,
+    async (invocation: unknown) => {
+      const inv = invocation as {
+        inv_id: string;
+        tool_name: string;
+        params: Record<string, unknown>;
+      };
 
-      const invocation = event.data as ToolInvocation;
+      // Notify sidepanel that browser control has started
+      await notifyBrowserControlStatus(true, inv.tool_name, {
+        tabId: _agentTabId ?? -1,
+        tabGroupId: _agentTabGroupId ?? -1,
+      });
+
       try {
-        const tabs = await browser.tabs.query({
-          active: true,
-          currentWindow: true,
-        });
-        const tabId = tabs[0]?.id;
-        if (!tabId) {
-          throw new Error('No active tab found');
-        }
+        // Update the extension badge to show AI is controlling
+        await browser.action.setBadgeText({ text: '●' });
+        await browser.action.setBadgeBackgroundColor({ color: '#3b82f6' });
 
-        const result = await browserToolRegistry.invoke(
-          invocation.tool,
-          invocation.params,
-          tabId,
-        );
-
-        await gateway.postToolResult(sessionId, invocation.invocation_id, {
-          success: true,
-          result,
-        });
+        const result = await executeToolInvocation(inv);
+        await gateway.postToolResult(_sessionId!, inv.inv_id, result);
       } catch (err) {
-        await gateway.postToolResult(sessionId, invocation.invocation_id, {
+        await gateway.postToolResult(_sessionId!, inv.inv_id, {
           success: false,
-          error: String(err),
+          error: (err as Error).message,
         });
+      } finally {
+        // Clear badge after execution
+        await browser.action.setBadgeText({ text: '' });
+        await notifyBrowserControlStatus(false);
       }
     },
   );
 }
 
 // ---------------------------------------------------------------------------
-// Message handler (sidepanel/popup -> background)
+// Tool invocation dispatcher
+// ---------------------------------------------------------------------------
+
+/**
+ * Execute a browser tool invocation from the Gateway.
+ * Routes 'navigate' and 'screenshot' commands here in the background,
+ * all other commands are forwarded to the content script on the AI tab.
+ */
+async function executeToolInvocation(inv: {
+  inv_id: string;
+  tool_name: string;
+  params: Record<string, unknown>;
+}): Promise<{ success: boolean; result?: unknown; error?: string }> {
+  const { tool_name, params } = inv;
+
+  try {
+    // 'navigate' is handled here -- creates/reuses AI tab group
+    if (tool_name === 'navigate') {
+      const url = params.url as string;
+      await navigateAgentTab(url);
+      // Wait for the page to start loading
+      await waitForTabLoad(_agentTabId!);
+      return { success: true, result: { url, navigated: true } };
+    }
+
+    // 'screenshot' must run in background (chrome.tabs.captureVisibleTab)
+    if (tool_name === 'screenshot') {
+      const screenshot = await captureAgentTabScreenshot();
+      return { success: true, result: screenshot };
+    }
+
+    // All other commands are forwarded to the content script
+    const tabId = await ensureAgentTab();
+    const result = await browser.tabs.sendMessage(tabId, {
+      type: 'EXECUTE_BROWSER_COMMAND',
+      command: {
+        command_id: inv.inv_id,
+        action: tool_name,
+        params,
+      },
+    });
+
+    return result as { success: boolean; result?: unknown; error?: string };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}
+
+/**
+ * Wait for a tab to finish loading (or timeout after 15s).
+ */
+async function waitForTabLoad(tabId: number): Promise<void> {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(resolve, 15_000);
+
+    const listener = (
+      updatedTabId: number,
+      changeInfo: chrome.tabs.TabChangeInfo,
+    ) => {
+      if (updatedTabId === tabId && changeInfo.status === 'complete') {
+        clearTimeout(timeout);
+        browser.tabs.onUpdated.removeListener(listener);
+        // Small extra delay for SPAs to hydrate
+        setTimeout(resolve, 500);
+      }
+    };
+
+    browser.tabs.onUpdated.addListener(listener);
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Message handler (sidepanel/popup → background)
 // ---------------------------------------------------------------------------
 
 async function handleMessage(
@@ -232,7 +417,12 @@ async function handleMessage(
     case 'GET_SESSION':
       return {
         success: true,
-        data: { sessionId: _sessionId, isLoggedIn: !!getAccessToken() },
+        data: {
+          sessionId: _sessionId,
+          isLoggedIn: !!getAccessToken(),
+          agentTabId: _agentTabId,
+          agentTabGroupId: _agentTabGroupId,
+        },
       };
 
     case 'CHAT_MESSAGE': {
@@ -247,6 +437,13 @@ async function handleMessage(
       } catch (err) {
         return { success: false, error: (err as Error).message };
       }
+    }
+
+    case 'FOCUS_AGENT_TAB': {
+      if (_agentTabId !== null) {
+        await browser.tabs.update(_agentTabId, { active: true });
+      }
+      return { success: true };
     }
 
     default:
@@ -273,8 +470,19 @@ export default defineBackground(() => {
       _sessionId = stored.sessionId as string;
       const refreshResult = await browser.storage.session.get('refreshToken');
       if (refreshResult.refreshToken) {
-        await refreshTokens(refreshResult.refreshToken as string);
+        const ok = await refreshTokens(refreshResult.refreshToken as string);
+        if (ok) {
+          await startCommandsListener();
+        }
       }
+    }
+  });
+
+  // Clean up AI tab group when tabs are removed
+  browser.tabs.onRemoved.addListener((tabId) => {
+    if (tabId === _agentTabId) {
+      _agentTabId = null;
+      _agentTabGroupId = null;
     }
   });
 
