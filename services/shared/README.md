@@ -8,7 +8,6 @@
 - ACP 서버 라우터와 ACP HTTP 클라이언트를 제공한다.
 - ChatOllama 팩토리 함수와 공통 LLM 설정을 제공한다.
 - 도메인 Pydantic 모델(`Session`)을 정의한다.
-- Redis 클라이언트 싱글턴과 키 네임스페이스 빌더를 제공한다.
 
 ## 모듈 목록
 
@@ -18,7 +17,8 @@
 | `shared.acp` | `server.py`, `client.py` | ACP 서버 라우터 팩토리, ACP HTTP 클라이언트 |
 | `shared.llm` | `factory.py`, `settings.py` | ChatOllama 팩토리, LLM 공통 설정 |
 | `shared.models` | `session.py` | `Session` Pydantic 모델 |
-| `shared.redis` | `client.py`, `keys.py` | Redis 클라이언트 싱글턴, 키 네임스페이스 빌더 |
+
+> **참고**: `shared.redis` 모듈은 제거되었다. Gateway 세션 저장소가 Redis에서 인메모리 dict로 전환되면서 더 이상 필요하지 않다.
 
 ---
 
@@ -124,7 +124,7 @@ llm_with_tools = llm.bind_tools(tools)
 
 #### `Session` (`session.py`)
 
-Redis에 JSON 직렬화되어 저장되는 세션 도메인 모델.
+세션 도메인 모델. Gateway 인메모리 스토어에 JSON 직렬화되어 저장된다.
 
 | 필드 | 타입 | 설명 |
 |------|------|------|
@@ -133,36 +133,6 @@ Redis에 JSON 직렬화되어 저장되는 세션 도메인 모델.
 | `status` | string | `"active"` \| `"inactive"` |
 | `created_at` | datetime | 세션 생성 시각 (UTC) |
 | `last_activity` | datetime | 마지막 활동 시각 (UTC) |
-
----
-
-### `shared.redis`
-
-#### `session_key(session_id)` (`keys.py`)
-
-Redis 키 네임스페이스 빌더. 서비스마다 키 문자열을 하드코딩하지 않도록 중앙화한다.
-
-| 함수 | 반환 패턴 | 설명 |
-|------|---------|------|
-| `session_key(session_id)` | `session:{session_id}` | 세션 메타데이터 String 키 (TTL 24h) |
-
-```python
-from shared.redis.keys import session_key
-
-raw = await redis.get(session_key(session_id))
-```
-
-#### `get_redis` / `close_redis` (`client.py`)
-
-Redis 비동기 클라이언트 싱글턴. 앱 lifespan에서 한 번 초기화하고 shutdown 시 닫는다.
-
-```python
-from shared.redis.client import get_redis, close_redis
-
-redis = await get_redis(redis_url)
-# ... use redis
-await close_redis()
-```
 
 ## 설치 방법
 
@@ -205,11 +175,7 @@ services/shared/
         │   ├── __init__.py
         │   ├── factory.py     # create_ollama_llm
         │   └── settings.py    # LLMSettings
-        ├── models/
-        │   ├── __init__.py
-        │   └── session.py     # Session, SessionCreate
-        └── redis/
+        └── models/
             ├── __init__.py
-            ├── client.py      # get_redis, close_redis
-            └── keys.py        # session_key
+            └── session.py     # Session, SessionCreate
 ```
