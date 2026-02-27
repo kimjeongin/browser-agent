@@ -32,6 +32,11 @@ def _add_session(session_id: str = "sess-001", with_queue: bool = True) -> None:
         gateway_main._get_or_create_queue(session_id)
 
 
+def _simulate_extension_connected(session_id: str) -> None:
+    """Simulate an Extension SSE subscriber being connected."""
+    gateway_main._session_sse_subscribers[session_id] = 1
+
+
 # ---------------------------------------------------------------------------
 # Invoke -- basic blocking round-trip
 # ---------------------------------------------------------------------------
@@ -41,6 +46,7 @@ async def test_invoke_and_result_roundtrip_success(gateway_client):
     """Full round-trip: invoke blocks until result endpoint resolves the Future."""
     session_id = "sess-roundtrip"
     _add_session(session_id)
+    _simulate_extension_connected(session_id)
 
     async def do_invoke():
         return await gateway_client.post(
@@ -82,6 +88,7 @@ async def test_invoke_and_result_roundtrip_tool_error(gateway_client):
     """When Extension reports failure, invoke returns 200 with the error detail."""
     session_id = "sess-tool-error"
     _add_session(session_id)
+    _simulate_extension_connected(session_id)
 
     async def do_invoke():
         return await gateway_client.post(
@@ -128,12 +135,12 @@ async def test_invoke_returns_404_for_unknown_session(gateway_client):
 
 
 # ---------------------------------------------------------------------------
-# Invoke -- 400 when extension not connected
+# Invoke -- 503 when extension not connected
 # ---------------------------------------------------------------------------
 
 
-async def test_invoke_returns_400_when_no_extension_connected(gateway_client):
-    """Invoke returns 400 when session exists but no extension SSE is connected."""
+async def test_invoke_returns_503_when_no_extension_connected(gateway_client):
+    """Invoke returns 503 when session exists but no extension SSE is connected."""
     session_id = "sess-no-ext"
     _add_session(session_id, with_queue=False)  # no extension SSE connected
 
@@ -141,7 +148,7 @@ async def test_invoke_returns_400_when_no_extension_connected(gateway_client):
         f"/sessions/{session_id}/browser-tools/invoke",
         json={"tool_name": "navigate", "params": {"url": "https://example.com"}},
     )
-    assert response.status_code == 400
+    assert response.status_code == 503
 
 
 # ---------------------------------------------------------------------------
@@ -171,7 +178,8 @@ async def test_submit_result_already_done_future_is_idempotent(gateway_client):
     future: asyncio.Future = loop.create_future()
     future.set_result({"success": True, "result": None})
 
-    gateway_main._pending_invocations[inv_id] = future
+    # Updated: tuple with timestamp (GW-1 change)
+    gateway_main._pending_invocations[inv_id] = (future, loop.time())
 
     response = await gateway_client.post(
         f"/sessions/any-session/browser-tools/result/{inv_id}",
@@ -216,6 +224,7 @@ async def test_invoke_enqueues_correct_event_shape(gateway_client):
     """Verify that invoke places the correct event shape in the session queue."""
     session_id = "sess-event-shape"
     _add_session(session_id)
+    _simulate_extension_connected(session_id)
     params = {"url": "https://test.example.com", "target": "_blank"}
 
     async def do_invoke():
@@ -252,6 +261,7 @@ async def test_browser_controlling_set_during_invoke(gateway_client):
     """_browser_controlling should be True while invoke is waiting for result."""
     session_id = "sess-ctrl-state"
     _add_session(session_id)
+    _simulate_extension_connected(session_id)
 
     controlling_during_invoke: list[bool] = []
 
