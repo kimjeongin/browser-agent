@@ -14,7 +14,6 @@ const TOOL_LABELS: Record<string, string> = {
   screenshot: '스크린샷 촬영 중',
   extract_content: '내용 추출 중',
   wait_for_element: '요소 대기 중',
-  evaluate_js: 'JS 실행 중',
   get_page_info: '페이지 정보 조회 중',
   browser_navigate: '페이지 이동 중',
   browser_click: '클릭 중',
@@ -23,7 +22,6 @@ const TOOL_LABELS: Record<string, string> = {
   browser_screenshot: '스크린샷 촬영 중',
   browser_extract_content: '내용 추출 중',
   browser_wait_for_element: '요소 대기 중',
-  browser_evaluate_js: 'JS 실행 중',
 };
 
 // ---------------------------------------------------------------------------

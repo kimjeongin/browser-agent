@@ -234,6 +234,26 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Chat Agent", version="0.1.0", lifespan=lifespan)
 
-# ACP endpoints: /runs, /runs/stream, /health
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    ollama_ok = False
+    llm_settings = LLMSettings()
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            resp = await c.get(f"{llm_settings.ollama_base_url.rstrip('/')}/api/tags")
+            ollama_ok = resp.is_success
+    except Exception:
+        pass
+
+    overall = "ok" if ollama_ok else "degraded"
+    return {
+        "status": overall,
+        "service": "chat-agent",
+        "ollama": "ok" if ollama_ok else "unavailable",
+    }
+
+
+# ACP endpoints: /runs, /runs/stream
 router = create_acp_router(lambda request: request.app.state.graph)
 app.include_router(router)

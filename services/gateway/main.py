@@ -16,6 +16,7 @@ webMCP-inspired 3-hop browser tool flow:
 import asyncio
 import json
 import logging
+import os
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
@@ -72,17 +73,31 @@ _session_queues: dict[str, asyncio.Queue] = {}
 # inv_id → asyncio.Future[dict] for blocking the Browser Agent call
 _pending_invocations: dict[str, asyncio.Future] = {}
 
+# inv_id → session_id reverse mapping for cleanup and status checks
+_invocation_to_session: dict[str, str] = {}
+
 # session_id → bool (True when browser agent is actively controlling)
 _browser_controlling: dict[str, bool] = {}
 
 
 def _get_or_create_queue(session_id: str) -> asyncio.Queue:
     if session_id not in _session_queues:
-        _session_queues[session_id] = asyncio.Queue()
+        _session_queues[session_id] = asyncio.Queue(maxsize=100)
     return _session_queues[session_id]
 
 
 def _cleanup_session(session_id: str) -> None:
+    # Cancel any pending futures for this session
+    stale_inv_ids = [
+        inv_id for inv_id, sid in _invocation_to_session.items()
+        if sid == session_id
+    ]
+    for inv_id in stale_inv_ids:
+        future = _pending_invocations.pop(inv_id, None)
+        if future and not future.done():
+            future.cancel()
+        _invocation_to_session.pop(inv_id, None)
+
     _session_queues.pop(session_id, None)
     _browser_controlling.pop(session_id, None)
 
@@ -171,10 +186,14 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "*").split(",")
+_cors_origins = [o.strip() for o in _cors_origins_raw if o.strip()]
+_cors_wildcard = "*" in _cors_origins
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["*"] if _cors_wildcard else _cors_origins,
+    allow_credentials=not _cors_wildcard,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -231,8 +250,22 @@ async def _verify_session_owner(
 
 
 @app.get("/health")
-async def health() -> dict[str, str]:
-    return {"status": "ok", "service": "gateway"}
+async def health(request: Request) -> dict[str, Any]:
+    redis_ok = False
+    try:
+        redis_ok = await _redis(request).ping()
+    except Exception:
+        pass
+
+    active_sessions = len(_session_queues)
+    overall = "ok" if redis_ok else "degraded"
+
+    return {
+        "status": overall,
+        "service": "gateway",
+        "redis": "ok" if redis_ok else "unavailable",
+        "active_sessions": active_sessions,
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +503,13 @@ async def invoke_browser_tool(
     Called by the Browser Agent. Blocks until the Extension posts the result
     (or timeout after 60s). Uses asyncio.Future for zero-overhead signalling.
     """
+    # Verify extension is connected (queue exists)
+    if session_id not in _session_queues:
+        raise HTTPException(
+            status_code=400,
+            detail="No extension connected for this session",
+        )
+
     # Verify session exists
     redis = _redis(request)
     raw = await redis.get(_session_key(session_id))
@@ -483,9 +523,9 @@ async def invoke_browser_tool(
     queue = _get_or_create_queue(session_id)
 
     # Create future BEFORE enqueuing to avoid race condition
-    loop = asyncio.get_event_loop()
-    future: asyncio.Future = loop.create_future()
+    future: asyncio.Future = asyncio.get_running_loop().create_future()
     _pending_invocations[inv_id] = future
+    _invocation_to_session[inv_id] = session_id
 
     # Mark session as actively controlling the browser
     _browser_controlling[session_id] = True
@@ -529,10 +569,9 @@ async def invoke_browser_tool(
         )
     finally:
         _pending_invocations.pop(inv_id, None)
+        _invocation_to_session.pop(inv_id, None)
         # Clear controlling status if no more pending invocations for session
-        if not any(
-            k.startswith(session_id) for k in _pending_invocations
-        ):
+        if not any(v == session_id for v in _invocation_to_session.values()):
             _browser_controlling[session_id] = False
 
 

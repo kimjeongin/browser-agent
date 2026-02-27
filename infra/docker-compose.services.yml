@@ -9,8 +9,9 @@ services:
     container_name: browser-agent-gateway
     ports: ["8000:8000"]
     environment:
+      CORS_ORIGINS: ${CORS_ORIGINS:-*}
       REDIS_URL: redis://redis:6379/0
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/browser_agent
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       ORCHESTRATOR_URL: http://orchestrator:8001
       KEYCLOAK_REALM_URL: http://keycloak:8080/realms/browser-agent
       KEYCLOAK_AUDIENCE: browser-agent-extension
@@ -28,13 +29,13 @@ services:
       context: ../services
       dockerfile: ochestrator/Dockerfile
     container_name: browser-agent-orchestrator
-    ports: ["8001:8001"]
+    expose: ["8001"]
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       ORCHESTRATOR_MODEL: llama3.1:8b
       CHAT_AGENT_URL: http://chat-agent:8002
       BROWSER_AGENT_URL: http://browser-agent:8003
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/browser_agent
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -46,11 +47,11 @@ services:
       context: ../services
       dockerfile: chat_agent/Dockerfile
     container_name: browser-agent-chat-agent
-    ports: ["8002:8002"]
+    expose: ["8002"]
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       CHAT_MODEL: qwen2.5:7b
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/browser_agent
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -62,12 +63,12 @@ services:
       context: ../services
       dockerfile: browser_agent/Dockerfile
     container_name: browser-agent-browser-agent
-    ports: ["8003:8003"]
+    expose: ["8003"]
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       BROWSER_MODEL: qwen2.5:14b
       GATEWAY_URL: http://gateway:8000
-      DATABASE_URL: postgresql+asyncpg://postgres:password@postgres:5432/browser_agent
+      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       BROWSER_TOOL_TIMEOUT: "65"
     extra_hosts:
       - "host.docker.internal:host-gateway"
