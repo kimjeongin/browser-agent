@@ -111,9 +111,36 @@ async function captureAgentTabScreenshot(): Promise<{ screenshot: string }> {
   await new Promise((r) => setTimeout(r, 300));
 
   const dataUrl = await browser.tabs.captureVisibleTab(windowId!, {
-    format: 'png',
+    format: 'jpeg',
+    quality: 65,
   });
   return { screenshot: dataUrl };
+}
+
+/**
+ * Clean up old "AI Assistant" tab groups except the current one.
+ * Prevents group accumulation on repeated login/logout cycles.
+ */
+async function cleanupOldAITabGroups(): Promise<void> {
+  try {
+    const existingGroups = await browser.tabGroups.query({ title: 'AI Assistant' });
+    for (const group of existingGroups) {
+      if (group.id === _agentTabGroupId) continue;
+
+      const tabs = await browser.tabs.query({ groupId: group.id });
+      for (const tab of tabs) {
+        if (tab.id) {
+          try {
+            await browser.tabs.remove(tab.id);
+          } catch {
+            // Tab may already be closed
+          }
+        }
+      }
+    }
+  } catch (err) {
+    console.warn('[Background] Failed to cleanup old AI tab groups:', err);
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -215,6 +242,8 @@ async function login(): Promise<{
     const session = await gateway.createSession();
     _sessionId = session.session_id;
     await browser.storage.local.set({ sessionId: _sessionId });
+
+    await cleanupOldAITabGroups();
 
     await startCommandsListener();
 
@@ -501,41 +530,50 @@ async function handleMessage(
 // ---------------------------------------------------------------------------
 
 export default defineBackground(() => {
+  // ========================================================================
+  // SW Restart Recovery (runs every time SW activates, not just browser start)
+  // Service Worker can restart after 30s of inactivity. Unlike onStartup,
+  // this runs on every SW activation to restore session state.
+  // ========================================================================
+  (async () => {
+    if (_sessionId) return; // Already recovered
+
+    try {
+      const [localStored, sessionStored] = await Promise.all([
+        browser.storage.local.get('sessionId'),
+        browser.storage.session.get('refreshToken'),
+      ]);
+
+      if (localStored.sessionId && sessionStored.refreshToken) {
+        const ok = await refreshTokens(sessionStored.refreshToken as string);
+        if (ok) {
+          _sessionId = localStored.sessionId as string;
+
+          // Restore AI tab ID if available
+          const tabStored = await browser.storage.session.get('ai_tab_id');
+          if (tabStored.ai_tab_id) {
+            const tabId = tabStored.ai_tab_id as number;
+            try {
+              const tab = await browser.tabs.get(tabId);
+              if (tab && tab.id) _agentTabId = tab.id;
+            } catch {
+              await browser.storage.session.remove('ai_tab_id');
+            }
+          }
+
+          await startCommandsListener();
+          console.log('[Background] Session restored after SW restart:', _sessionId);
+        }
+      }
+    } catch (err) {
+      console.warn('[Background] SW restart recovery failed:', err);
+    }
+  })();
+
   // Open side panel when extension icon is clicked
   browser.action.onClicked.addListener(async (tab) => {
     if (tab.id) {
       await browser.sidePanel.open({ tabId: tab.id });
-    }
-  });
-
-  // Restore AI tab ID from session storage on SW startup
-  browser.storage.session.get('ai_tab_id').then((stored) => {
-    if (stored.ai_tab_id) {
-      const tabId = stored.ai_tab_id as number;
-      browser.tabs.get(tabId).then((tab) => {
-        if (tab && tab.id) {
-          _agentTabId = tab.id;
-        } else {
-          browser.storage.session.remove('ai_tab_id');
-        }
-      }).catch(() => {
-        browser.storage.session.remove('ai_tab_id');
-      });
-    }
-  });
-
-  // Restore session on browser startup
-  browser.runtime.onStartup.addListener(async () => {
-    const stored = await browser.storage.local.get('sessionId');
-    if (stored.sessionId) {
-      _sessionId = stored.sessionId as string;
-      const refreshResult = await browser.storage.session.get('refreshToken');
-      if (refreshResult.refreshToken) {
-        const ok = await refreshTokens(refreshResult.refreshToken as string);
-        if (ok) {
-          await startCommandsListener();
-        }
-      }
     }
   });
 

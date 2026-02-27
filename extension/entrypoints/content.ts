@@ -19,6 +19,9 @@ type CommandResult = {
   error?: string;
 };
 
+// Execution queue to serialize DOM commands and prevent race conditions
+let _executionQueue: Promise<void> = Promise.resolve();
+
 // ---------------------------------------------------------------------------
 // Command execution
 // ---------------------------------------------------------------------------
@@ -41,15 +44,51 @@ async function executeCommand(command: BrowserCommand): Promise<CommandResult> {
       }
 
       case 'click': {
-        const el = document.querySelector(
-          params.selector as string,
-        ) as HTMLElement | null;
-        if (!el) throw new Error(`Element not found: ${params.selector}`);
+        const primarySelector = params.selector as string;
+        const fallbackSelectors = (params.fallback_selectors as string[]) ?? [];
+        const elementText = params.element_text as string | undefined;
+
+        // 1st: primary selector
+        let el: HTMLElement | null = document.querySelector(primarySelector) as HTMLElement | null;
+        let usedSelector = primarySelector;
+
+        // 2nd: fallback selectors in order
+        if (!el || !isVisible(el)) {
+          for (const fallback of fallbackSelectors) {
+            const candidate = document.querySelector(fallback) as HTMLElement | null;
+            if (candidate && isVisible(candidate)) {
+              el = candidate;
+              usedSelector = fallback;
+              break;
+            }
+          }
+        }
+
+        // 3rd: text-based search (aria-label, innerText)
+        if ((!el || !isVisible(el)) && elementText) {
+          const textLower = elementText.toLowerCase();
+          const candidates = Array.from(
+            document.querySelectorAll('button, a, [role="button"], [role="link"], input[type="submit"]'),
+          );
+          const found = candidates.find((e) => {
+            const htmlE = e as HTMLElement;
+            const label = e.getAttribute('aria-label')?.toLowerCase() ?? '';
+            const text = htmlE.innerText?.toLowerCase() ?? '';
+            return (label.includes(textLower) || text.includes(textLower)) && isVisible(e);
+          }) as HTMLElement | null;
+
+          if (found) {
+            el = found;
+            usedSelector = `[text~="${elementText}"]`;
+          }
+        }
+
+        if (!el) throw new Error(`Element not found: ${primarySelector}`);
         if (!isVisible(el)) {
-          return { command_id, success: false, error: `Element not interactable (hidden or zero-size): ${params.selector}` };
+          return { command_id, success: false, error: `Element not interactable (hidden or zero-size): ${usedSelector}` };
         }
         el.click();
-        result = { clicked: params.selector };
+        result = { clicked: usedSelector };
         break;
       }
 
@@ -112,6 +151,65 @@ async function executeCommand(command: BrowserCommand): Promise<CommandResult> {
           params.visible as boolean,
         );
         result = { found: !!el, selector: sel };
+        break;
+      }
+
+      case 'get_structured_dom': {
+        const viewportTop = window.scrollY;
+        const viewportBottom = window.scrollY + window.innerHeight;
+
+        const interactableSelectors = [
+          'input:not([type="hidden"])',
+          'button',
+          'a[href]',
+          'select',
+          'textarea',
+          '[role="button"]',
+          '[role="link"]',
+          '[role="searchbox"]',
+          '[role="combobox"]',
+          '[onclick]',
+          '[tabindex="0"]',
+        ].join(', ');
+
+        const elements = Array.from(document.querySelectorAll(interactableSelectors))
+          .filter((el) => {
+            const rect = el.getBoundingClientRect();
+            const inViewport = rect.top < viewportBottom && rect.bottom > viewportTop;
+            return inViewport && isVisible(el);
+          })
+          .slice(0, 50)
+          .map((el, idx) => {
+            const htmlEl = el as HTMLElement;
+            const inputEl = el as HTMLInputElement;
+            const anchorEl = el as HTMLAnchorElement;
+
+            let selector: string | null = null;
+            if (el.id) selector = `#${el.id}`;
+            else if (inputEl.name) selector = `[name="${inputEl.name}"]`;
+            else if (el.getAttribute('aria-label')) selector = `[aria-label="${el.getAttribute('aria-label')}"]`;
+
+            return {
+              idx,
+              tag: el.tagName.toLowerCase(),
+              type: inputEl.type ?? null,
+              id: el.id || null,
+              name: inputEl.name || null,
+              placeholder: 'placeholder' in el ? (el as HTMLInputElement).placeholder || null : null,
+              text: htmlEl.innerText?.trim().slice(0, 100) || null,
+              href: anchorEl.href || null,
+              ariaLabel: el.getAttribute('aria-label'),
+              selector,
+            };
+          });
+
+        result = {
+          url: window.location.href,
+          title: document.title,
+          interactable_count: elements.length,
+          elements,
+          page_text_preview: document.body.innerText.slice(0, 2000),
+        };
         break;
       }
 
@@ -185,7 +283,21 @@ export default defineContentScript({
         sendResponse,
       ) => {
         if (message.type === 'EXECUTE_BROWSER_COMMAND' && message.command) {
-          executeCommand(message.command).then(sendResponse);
+          const cmd = message.command;
+          // Queue the execution to serialize concurrent commands
+          const resultPromise = new Promise<CommandResult>((resolve) => {
+            _executionQueue = _executionQueue
+              .then(() => executeCommand(cmd))
+              .then(resolve)
+              .catch((err) => {
+                resolve({
+                  command_id: cmd.command_id,
+                  success: false,
+                  error: (err as Error).message,
+                });
+              });
+          });
+          resultPromise.then(sendResponse);
           return true; // async response
         }
       },
