@@ -1,6 +1,6 @@
 # infra
 
-`docker-compose.yml`과 `docker-compose.services.yml`로 구성된 로컬 개발 환경 정의. PostgreSQL, Redis, MinIO, Keycloak 인프라 서비스와 모든 애플리케이션 서비스를 포함한다.
+`docker-compose.yml`과 `docker-compose.services.yml`로 구성된 로컬 개발 환경 정의. PostgreSQL, MinIO, Keycloak 인프라 서비스와 모든 애플리케이션 서비스를 포함한다.
 
 ---
 
@@ -9,7 +9,6 @@
 | 서비스 | 포트 | 역할 | 이미지 |
 |--------|------|------|--------|
 | `postgres` | 5432 | 애플리케이션 DB, Keycloak DB, LangGraph 체크포인트 | `pgvector/pgvector:pg16` |
-| `redis` | 6379 | 세션 캐시 | `redis:7-alpine` |
 | `minio` | 9000 (API), 9001 (Console) | 스크린샷·파일 오브젝트 스토리지 (S3 호환) | `minio/minio:latest` |
 | `keycloak` | 8080 | JWT 발급, PKCE 플로우, JWKS 제공 | `quay.io/keycloak/keycloak:26.5.3` |
 
@@ -28,7 +27,7 @@
 
 ### `docker-compose.yml` — 인프라 전용
 
-PostgreSQL, Redis, MinIO, Keycloak만 포함한다. 애플리케이션 서비스 없이 인프라만 올리거나 인프라를 별도로 관리할 때 사용한다.
+PostgreSQL, MinIO, Keycloak만 포함한다. 애플리케이션 서비스 없이 인프라만 올리거나 인프라를 별도로 관리할 때 사용한다.
 
 ```bash
 cd infra
@@ -69,9 +68,7 @@ postgres (healthy)
     ├── keycloak (postgres healthy 후 시작 → import-realm)
     └── 각 서비스 (postgres healthy 후 시작)
             └── gateway (keycloak healthy 후 시작)
-redis (healthy)
-    └── gateway (redis healthy 후 시작)
-browser-agent (gateway healthy 후 시작)
+browser-agent (gateway started 후 시작)
 ```
 
 `postgres/init.sql`이 PostgreSQL 최초 초기화 시 실행된다:
@@ -93,7 +90,6 @@ CREATE EXTENSION IF NOT EXISTS vector;
 | 서비스 | 호스트 포트 | 컨테이너 포트 |
 |--------|-------------|---------------|
 | PostgreSQL | 5432 | 5432 |
-| Redis | 6379 | 6379 |
 | MinIO API | 9000 | 9000 |
 | MinIO Console | 9001 | 9001 |
 | Keycloak | 8080 | 8080 |

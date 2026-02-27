@@ -5,7 +5,7 @@
 ## 책임
 
 - Keycloak JWKS로 Bearer 토큰을 검증한다 (RS256, 60분 TTL 캐시).
-- Redis에 세션을 저장하고 조회·삭제한다 (TTL 24시간).
+- 인메모리 dict에 세션을 저장하고 조회·삭제한다 (TTL 24시간, lazy expiry).
 - 채팅 요청을 Orchestrator ACP 엔드포인트로 프록시한다 (동기 및 SSE 스트리밍).
 - `asyncio.Queue`로 Browser Agent의 도구 호출을 Extension SSE 채널에 전달한다.
 - `asyncio.Future`로 Extension의 도구 실행 결과를 Browser Agent에 반환한다.
@@ -66,7 +66,7 @@ Gateway (asyncio.Future.set_result()) → Browser Agent 응답 반환
 
 ### `DELETE /sessions/{session_id}`
 
-세션을 비활성 상태로 표시한다 (`status: "inactive"`). Redis 레코드는 TTL이 만료될 때까지 유지된다.
+세션을 비활성 상태로 표시한다 (`status: "inactive"`). 인메모리 레코드는 TTL이 만료될 때까지 유지된다.
 
 ### `POST /sessions/{session_id}/chat`
 
@@ -155,17 +155,10 @@ Extension이 DOM 액션 결과를 제출하는 엔드포인트. `inv_id`에 해�
 | `_pending_invocations` | `dict[str, asyncio.Future]` | 호출 ID별 대기 중인 Future |
 | `_browser_controlling` | `dict[str, bool]` | 세션별 브라우저 제어 활성 여부 |
 
-## Redis 키 네임스페이스
-
-| 키 패턴 | 타입 | TTL | 용도 |
-|---------|------|-----|------|
-| `session:{session_id}` | String (JSON) | 24시간 | 세션 상태 저장 |
-
 ## 의존 서비스
 
 | 서비스 | 용도 |
 |--------|------|
-| Redis `:6379` | 세션 저장 |
 | Keycloak `:8080` | JWKS 엔드포인트 (`/realms/browser-agent/protocol/openid-connect/certs`) |
 | Orchestrator `:8001` | ACP `POST /runs`, `POST /runs/stream` |
 
@@ -173,12 +166,11 @@ Extension이 DOM 액션 결과를 제출하는 엔드포인트. `inv_id`에 해�
 
 | 변수 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
-| `REDIS_URL` | string | `redis://redis:6379/0` | Redis 연결 URL |
 | `DATABASE_URL` | string | `postgresql+asyncpg://postgres:password@postgres:5432/browser_agent` | PostgreSQL DSN (현재 미사용, 향후 확장용) |
 | `ORCHESTRATOR_URL` | string | `http://orchestrator:8001` | Orchestrator 서비스 URL |
 | `KEYCLOAK_REALM_URL` | string | `http://keycloak:8080/realms/browser-agent` | Keycloak Realm URL |
 | `KEYCLOAK_AUDIENCE` | string | `browser-agent-extension` | JWT `aud` claim 검증 값 |
-| `SESSION_TTL` | int | `86400` | 세션 Redis TTL (초), 기본 24시간 |
+| `SESSION_TTL` | int | `86400` | 세션 인메모리 TTL (초), 기본 24시간 |
 | `BROWSER_TOOL_TIMEOUT` | float | `60.0` | 브라우저 도구 응답 대기 최대 시간 (초) |
 
 ## 로컬 실행
@@ -199,7 +191,7 @@ docker compose -f docker-compose.services.yml up --build gateway
 ## 구현 주의사항
 
 - JWT 검증은 `app.state.verifier` (`KeycloakJWTVerifier`)에 위임한다. Gateway 자체에서 검증 로직을 구현하지 않는다.
-- `DELETE /sessions/{id}`는 Redis 레코드를 즉시 삭제하지 않고 `status`를 `"inactive"`로 변경한다. TTL은 `SESSION_TTL`로 재설정된다.
+- `DELETE /sessions/{id}`는 인메모리 레코드를 즉시 삭제하지 않고 `status`를 `"inactive"`로 변경한다. TTL은 `SESSION_TTL`로 재설정된다.
 - SSE 킵얼라이브: `asyncio.wait_for(queue.get(), timeout=15.0)`이 15초 대기 후 데이터 없으면 `comment: keepalive`를 전송한다.
 - `GET /sessions/{id}/commands`는 인증 없이 접근 가능하다. Extension background script가 JWT를 매 요청마다 안전하게 전달하기 어렵기 때문이다.
 - asyncio.Queue + asyncio.Future 패턴은 단일 Gateway 프로세스 내에서만 동작한다. 수평 확장이 필요하면 Redis Streams로 교체해야 한다.

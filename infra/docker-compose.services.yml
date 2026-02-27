@@ -10,15 +10,12 @@ services:
     ports: ["8000:8000"]
     environment:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      REDIS_URL: redis://redis:6379/0
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       ORCHESTRATOR_URL: http://orchestrator:8001
       KEYCLOAK_REALM_URL: http://keycloak:8080/realms/browser-agent
       KEYCLOAK_AUDIENCE: browser-agent-extension
       BROWSER_TOOL_TIMEOUT: "60"
     depends_on:
-      redis:
-        condition: service_healthy
       postgres:
         condition: service_healthy
       keycloak:

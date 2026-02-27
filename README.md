@@ -32,13 +32,12 @@ Extension ──POST /browser-tools/result/{inv_id}──▶ Gateway :8000
 | 컴포넌트 | 포트 | 역할 | 기술 스택 |
 |----------|------|------|-----------|
 | Extension | — | 사용자 UI, DOM 제어 | WXT, React 19, Tailwind v4, Zustand |
-| Gateway | 8000 | 진입점, SSE 허브, JWT 검증, 브라우저 도구 브로커 | FastAPI, Redis |
+| Gateway | 8000 | 진입점, SSE 허브, JWT 검증, 브라우저 도구 브로커 | FastAPI |
 | Orchestrator | 8001 | 의도 분류, 에이전트 라우팅 | FastAPI, LangGraph |
 | Chat Agent | 8002 | 웹 검색, 일반 대화 | FastAPI, LangGraph, DuckDuckGo |
 | Browser Agent | 8003 | DOM 제어 | FastAPI, LangGraph, httpx |
 | Keycloak | 8080 | JWT 발급, PKCE | Keycloak 26 |
 | PostgreSQL | 5432 | DB, LangGraph 체크포인트 | pgvector/pgvector:pg16 |
-| Redis | 6379 | 세션 캐시 | Redis 7 |
 | MinIO | 9000/9001 | 오브젝트 스토리지 | MinIO |
 
 ---
@@ -68,7 +67,7 @@ ollama pull qwen2.5:14b      # Browser Agent
 git clone <repo-url>
 cd browser-agent
 
-# 2. 인프라 시작 (PostgreSQL, Redis, MinIO, Keycloak)
+# 2. 인프라 시작 (PostgreSQL, MinIO, Keycloak)
 cd infra
 docker compose up -d
 
@@ -99,7 +98,6 @@ pnpm build
 
 | 변수 | 서비스 | 예시 |
 |------|--------|------|
-| `REDIS_URL` | Gateway | `redis://redis:6379/0` |
 | `DATABASE_URL` | Gateway, Orchestrator, Chat, Browser | `postgresql+asyncpg://postgres:password@postgres:5432/browser_agent` |
 | `ORCHESTRATOR_URL` | Gateway | `http://orchestrator:8001` |
 | `KEYCLOAK_REALM_URL` | Gateway | `http://keycloak:8080/realms/browser-agent` |

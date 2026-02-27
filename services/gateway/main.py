@@ -1,7 +1,7 @@
 """Gateway service -- public-facing entry point for the browser extension.
 
 Responsibilities:
-- JWT-authenticated session management (Redis-backed)
+- JWT-authenticated session management (in-memory, TTL enforced lazily)
 - Chat proxy to Orchestrator via ACP (sync and SSE streaming)
 - Browser tool invocation channel (asyncio.Queue → SSE → Extension)
 - Browser tool result ingestion (Extension → asyncio.Future → Browser Agent)
@@ -17,12 +17,12 @@ import asyncio
 import json
 import logging
 import os
+import time
 import uuid
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 from typing import Annotated, Any
 
-import redis.asyncio as aioredis
 from fastapi import Depends, FastAPI, HTTPException, Query, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -47,7 +47,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    redis_url: str = "redis://redis:6379/0"
     database_url: str = (
         "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
     )
@@ -61,10 +60,22 @@ class Settings(BaseSettings):
 settings = Settings()
 
 # ---------------------------------------------------------------------------
+# In-memory session store
+# Sessions are stored here instead of Redis. TTL is enforced lazily on access.
+# NOTE: State is process-local. For horizontal scaling, migrate to an external
+#       store (e.g. Redis) and replace asyncio.Queue/Future with Redis Streams.
+# ---------------------------------------------------------------------------
+
+# session_id → Session model
+_sessions: dict[str, Session] = {}
+
+# session_id → expiry (monotonic time)
+_session_expires_at: dict[str, float] = {}
+
+# ---------------------------------------------------------------------------
 # In-memory state for browser tool invocations
 # Per-session asyncio.Queue for command dispatch (SSE → Extension)
 # Per-invocation asyncio.Future for result awaiting (Browser Agent blocks)
-# NOTE: Single-instance only. For horizontal scaling, replace with Redis streams.
 # ---------------------------------------------------------------------------
 
 # session_id → asyncio.Queue of tool_invocation dicts
@@ -78,6 +89,30 @@ _invocation_to_session: dict[str, str] = {}
 
 # session_id → bool (True when browser agent is actively controlling)
 _browser_controlling: dict[str, bool] = {}
+
+
+def _set_session(session: Session) -> None:
+    """Store a session with TTL in the in-memory store."""
+    _sessions[session.session_id] = session
+    _session_expires_at[session.session_id] = time.monotonic() + settings.session_ttl
+
+
+def _get_session_or_404(session_id: str) -> Session:
+    """Load a session from the in-memory store or raise 404.
+
+    Also evicts the session if its TTL has elapsed (lazy expiry).
+    """
+    session = _sessions.get(session_id)
+    expires_at = _session_expires_at.get(session_id)
+
+    if session is None or (expires_at is not None and time.monotonic() > expires_at):
+        _sessions.pop(session_id, None)
+        _session_expires_at.pop(session_id, None)
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+    return session
 
 
 def _get_or_create_queue(session_id: str) -> asyncio.Queue:
@@ -100,6 +135,8 @@ def _cleanup_session(session_id: str) -> None:
 
     _session_queues.pop(session_id, None)
     _browser_controlling.pop(session_id, None)
+    _sessions.pop(session_id, None)
+    _session_expires_at.pop(session_id, None)
 
 
 # ---------------------------------------------------------------------------
@@ -154,25 +191,16 @@ async def lifespan(app: FastAPI):
         audience=settings.keycloak_audience,
     )
 
-    # Redis connection pool (session state only, no Pub/Sub for browser cmds)
-    app.state.redis = aioredis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-    )
-
     # ACP client for Orchestrator
     app.state.acp = ACPClient(base_url=settings.orchestrator_url)
 
     logger.info(
-        "Gateway started  [orchestrator=%s, redis=%s]",
+        "Gateway started  [orchestrator=%s]",
         settings.orchestrator_url,
-        settings.redis_url,
     )
 
     yield
 
-    # Cleanup
-    await app.state.redis.aclose()
     logger.info("Gateway shutdown complete")
 
 
@@ -206,36 +234,12 @@ CurrentUser = Annotated[dict[str, Any], Depends(get_current_user)]
 # ---------------------------------------------------------------------------
 
 
-def _redis(request: Request) -> aioredis.Redis:
-    """Retrieve the Redis client from app state."""
-    return request.app.state.redis
-
-
 def _acp(request: Request) -> ACPClient:
     """Retrieve the ACP client from app state."""
     return request.app.state.acp
 
 
-def _session_key(session_id: str) -> str:
-    return f"session:{session_id}"
-
-
-async def _get_session_or_404(
-    redis: aioredis.Redis, session_id: str
-) -> Session:
-    """Load a session from Redis or raise 404."""
-    raw = await redis.get(_session_key(session_id))
-    if raw is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session {session_id} not found",
-        )
-    return Session.model_validate_json(raw)
-
-
-async def _verify_session_owner(
-    session: Session, user: dict[str, Any]
-) -> None:
+def _verify_session_owner(session: Session, user: dict[str, Any]) -> None:
     """Ensure the authenticated user owns the session."""
     if session.user_id != user.get("sub"):
         raise HTTPException(
@@ -250,21 +254,11 @@ async def _verify_session_owner(
 
 
 @app.get("/health")
-async def health(request: Request) -> dict[str, Any]:
-    redis_ok = False
-    try:
-        redis_ok = await _redis(request).ping()
-    except Exception:
-        pass
-
-    active_sessions = len(_session_queues)
-    overall = "ok" if redis_ok else "degraded"
-
+async def health() -> dict[str, Any]:
     return {
-        "status": overall,
+        "status": "ok",
         "service": "gateway",
-        "redis": "ok" if redis_ok else "unavailable",
-        "active_sessions": active_sessions,
+        "active_sessions": len(_session_queues),
     }
 
 
@@ -275,11 +269,9 @@ async def health(request: Request) -> dict[str, Any]:
 
 @app.post("/sessions", status_code=status.HTTP_201_CREATED)
 async def create_session(
-    request: Request,
     user: CurrentUser,
 ) -> SessionResponse:
     """Create a new session for the authenticated user."""
-    redis = _redis(request)
     user_id: str = user["sub"]
 
     session = Session(
@@ -287,11 +279,7 @@ async def create_session(
         user_id=user_id,
     )
 
-    await redis.set(
-        _session_key(session.session_id),
-        session.model_dump_json(),
-        ex=settings.session_ttl,
-    )
+    _set_session(session)
 
     # Pre-create the command queue for this session
     _get_or_create_queue(session.session_id)
@@ -308,13 +296,11 @@ async def create_session(
 @app.get("/sessions/{session_id}")
 async def get_session(
     session_id: str,
-    request: Request,
     user: CurrentUser,
 ) -> SessionResponse:
     """Return session metadata."""
-    redis = _redis(request)
-    session = await _get_session_or_404(redis, session_id)
-    await _verify_session_owner(session, user)
+    session = _get_session_or_404(session_id)
+    _verify_session_owner(session, user)
 
     return SessionResponse(
         session_id=session.session_id,
@@ -327,22 +313,15 @@ async def get_session(
 @app.delete("/sessions/{session_id}")
 async def delete_session(
     session_id: str,
-    request: Request,
     user: CurrentUser,
 ) -> dict[str, bool]:
     """Mark a session as inactive."""
-    redis = _redis(request)
-    session = await _get_session_or_404(redis, session_id)
-    await _verify_session_owner(session, user)
+    session = _get_session_or_404(session_id)
+    _verify_session_owner(session, user)
 
     session.status = "inactive"
     session.last_activity = datetime.now(timezone.utc)
-
-    await redis.set(
-        _session_key(session_id),
-        session.model_dump_json(),
-        ex=settings.session_ttl,
-    )
+    _set_session(session)
 
     _cleanup_session(session_id)
 
@@ -363,9 +342,8 @@ async def chat(
     user: CurrentUser,
 ) -> JSONResponse:
     """Proxy a single chat turn to the Orchestrator (synchronous ACP run)."""
-    redis = _redis(request)
-    session = await _get_session_or_404(redis, session_id)
-    await _verify_session_owner(session, user)
+    session = _get_session_or_404(session_id)
+    _verify_session_owner(session, user)
 
     acp = _acp(request)
 
@@ -390,11 +368,7 @@ async def chat(
         ) from exc
 
     session.last_activity = datetime.now(timezone.utc)
-    await redis.set(
-        _session_key(session_id),
-        session.model_dump_json(),
-        ex=settings.session_ttl,
-    )
+    _set_session(session)
 
     return JSONResponse(content=result)
 
@@ -412,9 +386,8 @@ async def chat_stream(
     content: str = Query(..., description="User message to send"),
 ) -> EventSourceResponse:
     """Stream orchestrator response tokens to the client via SSE."""
-    redis = _redis(request)
-    session = await _get_session_or_404(redis, session_id)
-    await _verify_session_owner(session, user)
+    session = _get_session_or_404(session_id)
+    _verify_session_owner(session, user)
 
     acp = _acp(request)
     acp_input: dict[str, Any] = {
@@ -439,11 +412,7 @@ async def chat_stream(
             }
 
         session.last_activity = datetime.now(timezone.utc)
-        await redis.set(
-            _session_key(session_id),
-            session.model_dump_json(),
-            ex=settings.session_ttl,
-        )
+        _set_session(session)
 
     return EventSourceResponse(_event_generator())
 
@@ -503,20 +472,21 @@ async def invoke_browser_tool(
     Called by the Browser Agent. Blocks until the Extension posts the result
     (or timeout after 60s). Uses asyncio.Future for zero-overhead signalling.
     """
+    # Verify session exists
+    if session_id not in _sessions or (
+        session_id in _session_expires_at
+        and time.monotonic() > _session_expires_at[session_id]
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Session {session_id} not found",
+        )
+
     # Verify extension is connected (queue exists)
     if session_id not in _session_queues:
         raise HTTPException(
             status_code=400,
             detail="No extension connected for this session",
-        )
-
-    # Verify session exists
-    redis = _redis(request)
-    raw = await redis.get(_session_key(session_id))
-    if raw is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Session {session_id} not found",
         )
 
     inv_id = str(uuid.uuid4())
