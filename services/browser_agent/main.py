@@ -68,6 +68,15 @@ class GatewayBrowserToolsClient:
     def __init__(self, gateway_url: str, timeout: float = 65.0) -> None:
         self._base_url = gateway_url.rstrip("/")
         self._timeout = timeout
+        self._client: httpx.AsyncClient | None = None
+
+    async def start(self) -> None:
+        self._client = httpx.AsyncClient(timeout=self._timeout)
+
+    async def close(self) -> None:
+        if self._client:
+            await self._client.aclose()
+            self._client = None
 
     async def invoke(
         self,
@@ -80,16 +89,18 @@ class GatewayBrowserToolsClient:
         Raises:
             RuntimeError: If the tool execution fails or times out.
         """
+        if self._client is None:
+            raise RuntimeError("GatewayBrowserToolsClient not started")
+
         url = f"{self._base_url}/sessions/{session_id}/browser-tools/invoke"
         payload = {"tool_name": tool_name, "params": params}
 
-        async with httpx.AsyncClient(timeout=self._timeout) as client:
-            try:
-                resp = await client.post(url, json=payload)
-            except httpx.TimeoutException as e:
-                raise RuntimeError(
-                    f"Browser tool '{tool_name}' timed out: {e}"
-                ) from e
+        try:
+            resp = await self._client.post(url, json=payload)
+        except httpx.TimeoutException as e:
+            raise RuntimeError(
+                f"Browser tool '{tool_name}' timed out: {e}"
+            ) from e
 
         if resp.status_code == 504:
             raise RuntimeError(
@@ -255,19 +266,6 @@ async def browser_wait_for_element(
 
 
 @tool
-async def browser_evaluate_js(session_id: str, script: str) -> dict[str, Any]:
-    """Execute JavaScript in the browser tab and return the result.
-
-    Args:
-        session_id: Active session ID.
-        script: JavaScript expression to evaluate. Must be an expression (not a statement).
-    """
-    return await _get_client().invoke(
-        session_id, "evaluate_js", {"script": script}
-    )
-
-
-@tool
 async def get_page_info(session_id: str) -> dict[str, Any]:
     """Get current page URL, title, and ready state.
 
@@ -285,7 +283,6 @@ BROWSER_TOOLS = [
     browser_screenshot,
     browser_extract_content,
     browser_wait_for_element,
-    browser_evaluate_js,
     get_page_info,
 ]
 
@@ -375,11 +372,12 @@ async def lifespan(app: FastAPI):
         "postgresql+asyncpg://", "postgresql://"
     )
 
-    # Initialise Gateway client
+    # Initialise Gateway client (singleton, reused across requests)
     _gateway_client = GatewayBrowserToolsClient(
         gateway_url=agent_settings.gateway_url,
         timeout=agent_settings.browser_tool_timeout,
     )
+    await _gateway_client.start()
 
     llm = create_ollama_llm(agent_settings.browser_model, llm_settings)
     llm_with_tools = llm.bind_tools(BROWSER_TOOLS)
@@ -399,11 +397,33 @@ async def lifespan(app: FastAPI):
         )
         yield
 
+    if _gateway_client:
+        await _gateway_client.close()
     _gateway_client = None
 
 
 app = FastAPI(title="Browser Agent", version="0.2.0", lifespan=lifespan)
 
-# ACP endpoints: /runs, /runs/stream, /health
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    gateway_ok = False
+    gw_url = BrowserAgentSettings().gateway_url
+    try:
+        async with httpx.AsyncClient(timeout=5.0) as c:
+            resp = await c.get(f"{gw_url.rstrip('/')}/health")
+            gateway_ok = resp.is_success
+    except Exception:
+        pass
+
+    overall = "ok" if gateway_ok else "degraded"
+    return {
+        "status": overall,
+        "service": "browser-agent",
+        "gateway": "ok" if gateway_ok else "unavailable",
+    }
+
+
+# ACP endpoints: /runs, /runs/stream
 router = create_acp_router(lambda request: request.app.state.graph)
 app.include_router(router)

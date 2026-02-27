@@ -30,16 +30,24 @@ async function executeCommand(command: BrowserCommand): Promise<CommandResult> {
     let result: unknown;
 
     switch (action) {
-      case 'navigate':
-        window.location.href = params.url as string;
-        result = { url: params.url };
+      case 'navigate': {
+        const url = params.url as string;
+        if (!url.startsWith('http://') && !url.startsWith('https://')) {
+          return { command_id, success: false, error: 'Invalid URL scheme. Only http:// and https:// are allowed.' };
+        }
+        window.location.href = url;
+        result = { url };
         break;
+      }
 
       case 'click': {
         const el = document.querySelector(
           params.selector as string,
         ) as HTMLElement | null;
         if (!el) throw new Error(`Element not found: ${params.selector}`);
+        if (!isVisible(el)) {
+          return { command_id, success: false, error: `Element not interactable (hidden or zero-size): ${params.selector}` };
+        }
         el.click();
         result = { clicked: params.selector };
         break;
@@ -104,13 +112,6 @@ async function executeCommand(command: BrowserCommand): Promise<CommandResult> {
           params.visible as boolean,
         );
         result = { found: !!el, selector: sel };
-        break;
-      }
-
-      case 'evaluate_js': {
-        // eslint-disable-next-line no-new-func
-        const fn = new Function(`return (${params.script as string})`);
-        result = fn();
         break;
       }
 

@@ -11,10 +11,17 @@
  */
 
 export class GatewayClient {
+  private onTokenRefresh: (() => Promise<boolean>) | null = null;
+
   constructor(
     private baseUrl: string,
     private getToken: () => string | null,
   ) {}
+
+  /** Register a callback to refresh the access token on 401. */
+  setTokenRefreshHandler(handler: () => Promise<boolean>) {
+    this.onTokenRefresh = handler;
+  }
 
   private get headers(): Record<string, string> {
     const token = this.getToken();
@@ -121,12 +128,12 @@ export class GatewayClient {
    * Connect to the commands SSE channel for a session.
    * The gateway pushes browser tool invocations over this channel.
    * Each event contains: { inv_id, tool_name, params }
-   * Returns a cancel function to tear down the connection.
+   * Returns { cancel, done } where `done` resolves when the stream ends.
    */
   async connectCommandsSSE(
     sessionId: string,
     onInvocation: (invocation: unknown) => void,
-  ): Promise<() => void> {
+  ): Promise<{ cancel: () => void; done: Promise<void> }> {
     const token = this.getToken();
     const url = `${this.baseUrl}/sessions/${sessionId}/commands`;
     const res = await fetch(url, {
@@ -161,10 +168,13 @@ export class GatewayClient {
       }
     };
 
-    read();
-    return () => {
-      cancelled = true;
-      reader.cancel();
+    const done = read();
+    return {
+      cancel: () => {
+        cancelled = true;
+        reader.cancel();
+      },
+      done,
     };
   }
 
@@ -181,18 +191,42 @@ export class GatewayClient {
     invId: string,
     result: { success: boolean; result?: unknown; error?: string },
   ): Promise<void> {
-    await fetch(
-      `${this.baseUrl}/sessions/${sessionId}/browser-tools/result/${invId}`,
-      {
-        method: 'POST',
-        headers: this.headers,
-        body: JSON.stringify({
-          inv_id: invId,
-          success: result.success,
-          result: result.result,
-          error: result.error,
-        }),
-      },
-    );
+    const MAX_ATTEMPTS = 3;
+    const RETRY_DELAYS = [0, 1000, 2000];
+
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      if (RETRY_DELAYS[attempt] > 0) {
+        await new Promise((r) => setTimeout(r, RETRY_DELAYS[attempt]));
+      }
+
+      try {
+        const res = await fetch(
+          `${this.baseUrl}/sessions/${sessionId}/browser-tools/result/${invId}`,
+          {
+            method: 'POST',
+            headers: this.headers,
+            body: JSON.stringify({
+              inv_id: invId,
+              success: result.success,
+              result: result.result,
+              error: result.error,
+            }),
+          },
+        );
+
+        if (res.ok) return;
+
+        if (res.status === 401 && this.onTokenRefresh) {
+          const refreshed = await this.onTokenRefresh();
+          if (refreshed) continue; // retry with new token
+          throw new Error('Token refresh failed');
+        }
+
+        console.error(`postToolResult attempt ${attempt + 1} failed: HTTP ${res.status}`);
+      } catch (err) {
+        console.error(`postToolResult attempt ${attempt + 1} error:`, err);
+        if (attempt === MAX_ATTEMPTS - 1) throw err;
+      }
+    }
   }
 }

@@ -55,9 +55,10 @@ export const useChatStore = create<ChatState>((set) => ({
 
   addMessage: (msg) => {
     const id = crypto.randomUUID();
-    set((s) => ({
-      messages: [...s.messages, { ...msg, id, timestamp: Date.now() }],
-    }));
+    set((s) => {
+      const messages = [...s.messages, { ...msg, id, timestamp: Date.now() }];
+      return { messages: messages.length > 200 ? messages.slice(-200) : messages };
+    });
     return id;
   },
 

@@ -16,7 +16,10 @@
 - `.claude/settings.local.json` 커밋 금지 (루트 `.gitignore`에 등록됨)
 - `.venv/`, `node_modules/` 는 서브디렉토리 `.gitignore`로 관리됨 — 루트에도 추가됨
 - 환경변수 파일(`.env`, `.env.local`) 커밋 금지
+- 병렬 브랜치 작업으로 diverge 발생 가능 → rebase 충돌 시 `git merge -s ours`로 로컬 우선
+- 멀티 스코프 커밋 허용: `refactor(gateway,browser-agent,extension): ...`
+- 대규모 diff(1500+ 라인)는 PR 본문에 "꼼꼼한 리뷰 필요" 명시
 
 ## gh CLI 활용
 - `gh pr create`, `gh pr list`, `gh repo view` 등 GitHub 작업에 gh CLI 우선 사용
-- git push 시 SSH 대신 `GIT_ASKPASS=/usr/local/bin/gh git push` 패턴 사용
+- git push 시 SSH 대신 `GIT_ASKPASS=/usr/local/bin/gh git push` 패턴 사용 (SSH 실패 시)

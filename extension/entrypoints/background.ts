@@ -43,6 +43,7 @@ async function getOrCreateAgentTabGroup(): Promise<number> {
     active: false,
   });
   _agentTabId = tab.id!;
+  await browser.storage.session.set({ ai_tab_id: _agentTabId });
 
   // Group the tab
   const groupId = await browser.tabs.group({ tabIds: [_agentTabId] });
@@ -83,6 +84,10 @@ async function ensureAgentTab(): Promise<number> {
  * Called for 'navigate' commands before routing to content script.
  */
 async function navigateAgentTab(url: string): Promise<void> {
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    throw new Error(`Invalid URL scheme. Only http:// and https:// are allowed.`);
+  }
+
   await getOrCreateAgentTabGroup();
 
   if (_agentTabId !== null) {
@@ -132,6 +137,13 @@ function getAccessToken(): string | null {
 }
 
 const gateway = new GatewayClient(config.apiBaseUrl, getAccessToken);
+
+// Register token refresh handler for 401 retry in API calls
+gateway.setTokenRefreshHandler(async () => {
+  const stored = await browser.storage.session.get('refreshToken');
+  if (!stored.refreshToken) return false;
+  return refreshTokens(stored.refreshToken as string);
+});
 
 // ---------------------------------------------------------------------------
 // Auth: PKCE login flow via Keycloak
@@ -252,6 +264,7 @@ async function logout() {
   _agentTabGroupId = null;
   _agentTabId = null;
   await browser.storage.session.remove('refreshToken');
+  await browser.storage.session.remove('ai_tab_id');
   await browser.storage.local.remove('sessionId');
 }
 
@@ -288,40 +301,72 @@ async function startCommandsListener() {
   if (!_sessionId) return;
   _cancelCommands?.();
 
-  _cancelCommands = await gateway.connectCommandsSSE(
-    _sessionId,
-    async (invocation: unknown) => {
-      const inv = invocation as {
-        inv_id: string;
-        tool_name: string;
-        params: Record<string, unknown>;
-      };
+  let backoff = 1000;
+  let cancelled = false;
 
-      // Notify sidepanel that browser control has started
-      await notifyBrowserControlStatus(true, inv.tool_name, {
-        tabId: _agentTabId ?? -1,
-        tabGroupId: _agentTabGroupId ?? -1,
-      });
-
+  const connect = async () => {
+    while (!cancelled && _sessionId) {
       try {
-        // Update the extension badge to show AI is controlling
-        await browser.action.setBadgeText({ text: '●' });
-        await browser.action.setBadgeBackgroundColor({ color: '#3b82f6' });
+        const { cancel, done } = await gateway.connectCommandsSSE(
+          _sessionId,
+          async (invocation: unknown) => {
+            const inv = invocation as {
+              inv_id: string;
+              tool_name: string;
+              params: Record<string, unknown>;
+            };
 
-        const result = await executeToolInvocation(inv);
-        await gateway.postToolResult(_sessionId!, inv.inv_id, result);
+            // Notify sidepanel that browser control has started
+            await notifyBrowserControlStatus(true, inv.tool_name, {
+              tabId: _agentTabId ?? -1,
+              tabGroupId: _agentTabGroupId ?? -1,
+            });
+
+            try {
+              // Update the extension badge to show AI is controlling
+              await browser.action.setBadgeText({ text: '●' });
+              await browser.action.setBadgeBackgroundColor({ color: '#3b82f6' });
+
+              const result = await executeToolInvocation(inv);
+              await gateway.postToolResult(_sessionId!, inv.inv_id, result);
+            } catch (err) {
+              await gateway.postToolResult(_sessionId!, inv.inv_id, {
+                success: false,
+                error: (err as Error).message,
+              });
+            } finally {
+              // Clear badge after execution
+              await browser.action.setBadgeText({ text: '' });
+              await notifyBrowserControlStatus(false);
+            }
+          },
+        );
+
+        // Connection succeeded -- reset backoff
+        backoff = 1000;
+
+        // Store cancel so outer cancel can tear down
+        _cancelCommands = () => {
+          cancelled = true;
+          cancel();
+        };
+
+        // Wait for stream to end (server close / network error).
+        // After `done` resolves, the while loop will retry with backoff.
+        await done;
       } catch (err) {
-        await gateway.postToolResult(_sessionId!, inv.inv_id, {
-          success: false,
-          error: (err as Error).message,
-        });
-      } finally {
-        // Clear badge after execution
-        await browser.action.setBadgeText({ text: '' });
-        await notifyBrowserControlStatus(false);
+        if (cancelled) return;
+        console.warn(`SSE connection failed, retrying in ${backoff}ms...`, err);
+        await new Promise((r) => setTimeout(r, backoff));
+        backoff = Math.min(backoff * 2, 30_000);
       }
-    },
-  );
+    }
+  };
+
+  _cancelCommands = () => {
+    cancelled = true;
+  };
+  connect();
 }
 
 // ---------------------------------------------------------------------------
@@ -463,6 +508,22 @@ export default defineBackground(() => {
     }
   });
 
+  // Restore AI tab ID from session storage on SW startup
+  browser.storage.session.get('ai_tab_id').then((stored) => {
+    if (stored.ai_tab_id) {
+      const tabId = stored.ai_tab_id as number;
+      browser.tabs.get(tabId).then((tab) => {
+        if (tab && tab.id) {
+          _agentTabId = tab.id;
+        } else {
+          browser.storage.session.remove('ai_tab_id');
+        }
+      }).catch(() => {
+        browser.storage.session.remove('ai_tab_id');
+      });
+    }
+  });
+
   // Restore session on browser startup
   browser.runtime.onStartup.addListener(async () => {
     const stored = await browser.storage.local.get('sessionId');
@@ -483,6 +544,7 @@ export default defineBackground(() => {
     if (tabId === _agentTabId) {
       _agentTabId = null;
       _agentTabGroupId = null;
+      browser.storage.session.remove('ai_tab_id');
     }
   });
 

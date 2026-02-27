@@ -7,6 +7,8 @@ from contextlib import asynccontextmanager
 from functools import partial
 from typing import Annotated, Any
 
+import httpx
+
 from fastapi import FastAPI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
@@ -104,7 +106,7 @@ async def supervisor_node(
 
 def _parse_agent_from_response(text: str) -> str:
     """Extract agent name from the LLM's JSON response, with fallback."""
-    json_match = re.search(r"\{[^}]+\}", text)
+    json_match = re.search(r"\{.*?\}", text, re.DOTALL)
     if json_match:
         try:
             parsed = json.loads(json_match.group())
@@ -303,6 +305,29 @@ app = FastAPI(
     version="0.2.0",
     lifespan=lifespan,
 )
+
+
+@app.get("/health")
+async def health() -> dict[str, Any]:
+    async def _check(url: str) -> bool:
+        try:
+            async with httpx.AsyncClient(timeout=5.0) as c:
+                resp = await c.get(f"{url.rstrip('/')}/health")
+                return resp.is_success
+        except Exception:
+            return False
+
+    chat_ok = await _check(settings.chat_agent_url)
+    browser_ok = await _check(settings.browser_agent_url)
+
+    overall = "ok" if (chat_ok and browser_ok) else "degraded"
+    return {
+        "status": overall,
+        "service": "orchestrator",
+        "chat_agent": "ok" if chat_ok else "unavailable",
+        "browser_agent": "ok" if browser_ok else "unavailable",
+    }
+
 
 router = create_acp_router(lambda request: request.app.state.graph)
 app.include_router(router)

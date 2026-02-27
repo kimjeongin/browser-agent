@@ -53,7 +53,10 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
         try:
             result = await graph.ainvoke(
                 body.input,
-                config={"configurable": {"thread_id": body.thread_id}},
+                config={
+                    "configurable": {"thread_id": body.thread_id},
+                    "recursion_limit": 25,
+                },
             )
             return RunResponse(
                 run_id=run_id,
@@ -81,7 +84,10 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
             try:
                 async for event in graph.astream_events(
                     body.input,
-                    config={"configurable": {"thread_id": body.thread_id}},
+                    config={
+                        "configurable": {"thread_id": body.thread_id},
+                        "recursion_limit": 25,
+                    },
                     version="v2",
                 ):
                     kind = event.get("event", "")
