@@ -22,12 +22,18 @@ def reset_module_state():
     gateway_main._session_queues.clear()
     gateway_main._pending_invocations.clear()
     gateway_main._browser_controlling.clear()
+    gateway_main._invocation_to_session.clear()
+    gateway_main._session_sse_subscribers.clear()
+    gateway_main._session_semaphores.clear()
     yield
     gateway_main._sessions.clear()
     gateway_main._session_expires_at.clear()
     gateway_main._session_queues.clear()
     gateway_main._pending_invocations.clear()
     gateway_main._browser_controlling.clear()
+    gateway_main._invocation_to_session.clear()
+    gateway_main._session_sse_subscribers.clear()
+    gateway_main._session_semaphores.clear()
 
 
 @pytest.fixture

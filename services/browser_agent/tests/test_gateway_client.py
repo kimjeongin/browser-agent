@@ -33,6 +33,7 @@ async def test_invoke_returns_result_on_success():
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
     result = await client.invoke(SESSION_ID, "navigate", {"url": "https://example.com"})
 
     assert result == {"url": "https://example.com"}
@@ -49,6 +50,7 @@ async def test_invoke_sends_correct_payload():
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
     await client.invoke(SESSION_ID, "click", {"selector": "#btn"})
 
     assert route.called
@@ -70,6 +72,7 @@ async def test_invoke_returns_none_when_result_is_null():
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
     result = await client.invoke(SESSION_ID, "screenshot", {})
     # result=None is valid (e.g., screenshot with no data yet)
     assert result is None
@@ -82,7 +85,7 @@ async def test_invoke_returns_none_when_result_is_null():
 
 @respx.mock
 async def test_invoke_raises_runtime_error_when_response_contains_error():
-    """Gateway returns success=False with an error message → RuntimeError."""
+    """Gateway returns success=False with an error message -> RuntimeError."""
     respx.post(INVOKE_URL).mock(
         return_value=httpx.Response(
             200,
@@ -91,13 +94,14 @@ async def test_invoke_raises_runtime_error_when_response_contains_error():
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
     with pytest.raises(RuntimeError, match="Element not found"):
         await client.invoke(SESSION_ID, "click", {"selector": "#missing"})
 
 
 @respx.mock
 async def test_invoke_raises_runtime_error_on_504():
-    """Gateway returns 504 (Extension timed out) → RuntimeError."""
+    """Gateway returns 504 (Extension timed out) -> RuntimeError."""
     respx.post(INVOKE_URL).mock(
         return_value=httpx.Response(
             504,
@@ -106,18 +110,20 @@ async def test_invoke_raises_runtime_error_on_504():
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
     with pytest.raises(RuntimeError, match="timed out"):
         await client.invoke(SESSION_ID, "navigate", {"url": "https://slow.example.com"})
 
 
 @respx.mock
 async def test_invoke_raises_runtime_error_on_non_success_http():
-    """Non-success HTTP status (except 504) → RuntimeError with status info."""
+    """Non-success HTTP status (except 504) -> RuntimeError with status info."""
     respx.post(INVOKE_URL).mock(
         return_value=httpx.Response(503, json={"detail": "Service unavailable"})
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
     with pytest.raises(RuntimeError, match="HTTP 503"):
         await client.invoke(SESSION_ID, "navigate", {"url": "https://example.com"})
 
@@ -130,6 +136,7 @@ async def test_invoke_raises_runtime_error_on_network_timeout():
     )
 
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=1.0)
+    await client.start()
     with pytest.raises(RuntimeError, match="timed out"):
         await client.invoke(SESSION_ID, "navigate", {"url": "https://example.com"})
 
@@ -156,6 +163,7 @@ def test_client_strips_trailing_slash():
 async def test_invoke_uses_correct_session_in_url():
     """Different session_ids produce different URL paths."""
     client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    await client.start()
 
     route = respx.post(
         f"{GATEWAY_URL}/sessions/custom-session-id/browser-tools/invoke"
@@ -168,3 +176,15 @@ async def test_invoke_uses_correct_session_in_url():
 
     await client.invoke("custom-session-id", "get_page_info", {})
     assert route.called
+
+
+# ---------------------------------------------------------------------------
+# Client not started
+# ---------------------------------------------------------------------------
+
+
+async def test_invoke_raises_when_not_started():
+    """Invoking without start() should raise RuntimeError."""
+    client = GatewayBrowserToolsClient(GATEWAY_URL, timeout=5.0)
+    with pytest.raises(RuntimeError, match="not started"):
+        await client.invoke(SESSION_ID, "navigate", {"url": "https://example.com"})
