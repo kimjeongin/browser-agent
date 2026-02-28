@@ -982,7 +982,7 @@ async def lifespan(app: FastAPI):
     # Planner/progress-check/replan use lighter model for speed
     planner_llm = create_ollama_llm(agent_settings.planner_model, llm_settings)
 
-    async with await AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
 
         app.state.graph = build_browser_graph(

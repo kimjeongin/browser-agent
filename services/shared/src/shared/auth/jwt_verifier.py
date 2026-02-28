@@ -47,13 +47,26 @@ class KeycloakJWTVerifier:
         """
         jwks = await self._get_jwks()
 
+        # Docker 환경 호환성: Gateway는 내부망(keycloak:8080)을 보지만
+        # 클라이언트는 외부망(localhost:8080) 토큰을 가져올 수 있음.
+        expected_issuer = self._issuer
+        try:
+            claims = jwt.get_unverified_claims(token)
+            token_iss = claims.get("iss")
+            if token_iss and token_iss != self._issuer:
+                alt_issuer = self._issuer.replace("://keycloak:", "://localhost:")
+                if token_iss == alt_issuer:
+                    expected_issuer = token_iss
+        except JWTError:
+            pass
+
         try:
             payload: dict[str, Any] = jwt.decode(
                 token,
                 jwks,
                 algorithms=["RS256"],
                 audience=self._audience,
-                issuer=self._issuer,
+                issuer=expected_issuer,
             )
         except JWTError:
             logger.warning("JWT verification failed", exc_info=True)

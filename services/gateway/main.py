@@ -319,9 +319,15 @@ def _acp(request: Request) -> ACPClient:
     return request.app.state.acp
 
 
+def _get_user_id(user: dict[str, Any]) -> str | None:
+    """Extract a stable user ID from the token payload."""
+    return user.get("sub") or user.get("preferred_username") or user.get("email")
+
+
 def _verify_session_owner(session: Session, user: dict[str, Any]) -> None:
     """Ensure the authenticated user owns the session."""
-    if session.user_id != user.get("sub"):
+    user_id = _get_user_id(user)
+    if not user_id or session.user_id != user_id:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="You do not own this session",
@@ -352,7 +358,13 @@ async def create_session(
     user: CurrentUser,
 ) -> SessionResponse:
     """Create a new session for the authenticated user."""
-    user_id: str = user["sub"]
+    user_id = _get_user_id(user)
+    if not user_id:
+        logger.error("Token payload missing identity claims: %s", list(user.keys()))
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Token missing 'sub', 'preferred_username', or 'email' claims",
+        )
 
     session = Session(
         session_id=uuid.uuid4().hex,
