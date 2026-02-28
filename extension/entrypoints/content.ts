@@ -22,6 +22,10 @@ type CommandResult = {
 // Execution queue to serialize DOM commands and prevent race conditions
 let _executionQueue: Promise<void> = Promise.resolve();
 
+// Set-of-Marks state: maps mark ID (string) to element info
+let _currentMarks: Record<string, { selector: string; tag: string }> = {};
+const _marksOverlayId = '__ai_marks_overlay__';
+
 // ---------------------------------------------------------------------------
 // Command execution
 // ---------------------------------------------------------------------------
@@ -220,6 +224,105 @@ async function executeCommand(command: BrowserCommand): Promise<CommandResult> {
           readyState: document.readyState,
         };
         break;
+
+      case 'create_marks_overlay': {
+        // Remove any existing overlay
+        document.getElementById(_marksOverlayId)?.remove();
+        _currentMarks = {};
+
+        const interactableSelectors = [
+          'input:not([type="hidden"])',
+          'button',
+          'a[href]',
+          'select',
+          'textarea',
+          '[role="button"]',
+          '[role="link"]',
+          '[role="searchbox"]',
+          '[role="combobox"]',
+          '[onclick]',
+          '[tabindex="0"]',
+        ].join(', ');
+
+        const visibleEls = Array.from(document.querySelectorAll(interactableSelectors))
+          .filter((el) => isVisible(el))
+          .slice(0, 50);
+
+        // Create the overlay div (covers full viewport, no pointer events)
+        const overlay = document.createElement('div');
+        overlay.id = _marksOverlayId;
+        overlay.style.cssText =
+          'position:fixed;top:0;left:0;width:100%;height:100%;' +
+          'z-index:2147483647;pointer-events:none;';
+        document.body.appendChild(overlay);
+
+        visibleEls.forEach((el, i) => {
+          const idx = i + 1;
+          const rect = el.getBoundingClientRect();
+
+          // Build the most specific selector we can
+          const htmlEl = el as HTMLElement;
+          const inputEl = el as HTMLInputElement;
+          let selector: string;
+          if (el.id) selector = `#${CSS.escape(el.id)}`;
+          else if (inputEl.name) selector = `[name="${inputEl.name}"]`;
+          else if (el.getAttribute('aria-label'))
+            selector = `[aria-label="${el.getAttribute('aria-label')}"]`;
+          else selector = el.tagName.toLowerCase();
+
+          _currentMarks[String(idx)] = {
+            selector,
+            tag: el.tagName.toLowerCase(),
+          };
+
+          // Place a small circular badge at the top-left of the element
+          const badge = document.createElement('div');
+          badge.textContent = String(idx);
+          badge.style.cssText =
+            `position:fixed;` +
+            `left:${Math.max(0, rect.left)}px;` +
+            `top:${Math.max(0, rect.top - 14)}px;` +
+            `min-width:18px;height:18px;border-radius:50%;` +
+            `background:#ef4444;color:#fff;` +
+            `font:bold 11px/18px sans-serif;text-align:center;` +
+            `padding:0 3px;box-sizing:border-box;`;
+          overlay.appendChild(badge);
+        });
+
+        result = { marks: { ..._currentMarks } };
+        break;
+      }
+
+      case 'remove_marks_overlay': {
+        document.getElementById(_marksOverlayId)?.remove();
+        // Keep _currentMarks so click_by_mark_id still works after removal
+        result = { removed: true };
+        break;
+      }
+
+      case 'click_by_mark_id': {
+        const markId = String(params.mark_id);
+        const mark = _currentMarks[markId];
+        if (!mark) {
+          const available = Object.keys(_currentMarks).join(', ') || 'none';
+          return {
+            command_id,
+            success: false,
+            error: `Mark ${markId} not found. Available marks: ${available}. Take a new screenshot to refresh marks.`,
+          };
+        }
+        const target = document.querySelector(mark.selector) as HTMLElement | null;
+        if (!target) {
+          return {
+            command_id,
+            success: false,
+            error: `Element for mark ${markId} (${mark.selector}) no longer exists in the DOM.`,
+          };
+        }
+        target.click();
+        result = { mark_id: Number(markId), clicked_selector: mark.selector };
+        break;
+      }
 
       default:
         throw new Error(`Unknown action: ${action}`);

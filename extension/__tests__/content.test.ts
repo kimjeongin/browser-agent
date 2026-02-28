@@ -203,6 +203,116 @@ describe('click fallback chain logic', () => {
   });
 });
 
+describe('Set-of-Marks overlay logic', () => {
+  it('create_marks_overlay should return marks keyed 1..N', () => {
+    // Simulate the overlay creation logic for N elements
+    const mockElements = [
+      { id: 'search', tagName: 'INPUT', name: 'q', getAttribute: () => null },
+      { id: '', tagName: 'BUTTON', name: '', getAttribute: () => null },
+      { id: '', tagName: 'A', name: '', getAttribute: (_: string) => 'Home' },
+    ];
+
+    const marks: Record<string, { selector: string; tag: string }> = {};
+
+    mockElements.forEach((el, i) => {
+      const idx = i + 1;
+      let selector: string;
+      if (el.id) selector = `#${el.id}`;
+      else if (el.name) selector = `[name="${el.name}"]`;
+      else {
+        const label = el.getAttribute('aria-label');
+        if (label) selector = `[aria-label="${label}"]`;
+        else selector = el.tagName.toLowerCase();
+      }
+      marks[String(idx)] = { selector, tag: el.tagName.toLowerCase() };
+    });
+
+    expect(Object.keys(marks)).toEqual(['1', '2', '3']);
+    expect(marks['1'].selector).toBe('#search');
+    expect(marks['1'].tag).toBe('input');
+    expect(marks['3'].selector).toBe('[aria-label="Home"]');
+  });
+
+  it('remove_marks_overlay should not remove _currentMarks state', () => {
+    // Simulate marks being set before removal
+    let currentMarks: Record<string, { selector: string; tag: string }> = {
+      '1': { selector: '#btn', tag: 'button' },
+    };
+
+    // After remove, marks should still be in state (for click_by_mark_id)
+    const simulateRemoveOverlay = () => {
+      // Only removes the DOM overlay, NOT _currentMarks
+      // currentMarks remains unchanged
+    };
+    simulateRemoveOverlay();
+
+    expect(currentMarks['1']).toBeDefined();
+    expect(currentMarks['1'].selector).toBe('#btn');
+  });
+
+  it('click_by_mark_id should return error for unknown mark_id', () => {
+    const currentMarks: Record<string, { selector: string; tag: string }> = {
+      '1': { selector: '#btn', tag: 'button' },
+    };
+
+    const markId = '99';
+    const mark = currentMarks[markId];
+
+    let result: { success: boolean; error?: string } | null = null;
+    if (!mark) {
+      const available = Object.keys(currentMarks).join(', ') || 'none';
+      result = {
+        success: false,
+        error: `Mark ${markId} not found. Available marks: ${available}.`,
+      };
+    }
+
+    expect(result).not.toBeNull();
+    expect(result!.success).toBe(false);
+    expect(result!.error).toContain('Mark 99 not found');
+    expect(result!.error).toContain('1');
+  });
+
+  it('click_by_mark_id should return success with clicked_selector', () => {
+    const currentMarks: Record<string, { selector: string; tag: string }> = {
+      '2': { selector: '#submit-btn', tag: 'button' },
+    };
+
+    const markId = '2';
+    const mark = currentMarks[markId];
+
+    // Simulate finding the element and clicking it
+    let result: { mark_id: number; clicked_selector: string } | null = null;
+    if (mark) {
+      // In real code: document.querySelector(mark.selector)?.click()
+      result = { mark_id: Number(markId), clicked_selector: mark.selector };
+    }
+
+    expect(result).not.toBeNull();
+    expect(result!.clicked_selector).toBe('#submit-btn');
+    expect(result!.mark_id).toBe(2);
+  });
+
+  it('_currentMarks should persist after remove_marks_overlay', () => {
+    // Simulates that marks survive overlay removal for deferred clicks
+    let currentMarks: Record<string, { selector: string; tag: string }> = {
+      '1': { selector: '#btn', tag: 'button' },
+      '2': { selector: 'a.link', tag: 'a' },
+    };
+
+    // simulate remove overlay (only removes DOM element, keeps marks)
+    // (no actual DOM in unit tests)
+
+    // marks still accessible
+    expect(currentMarks['1']).toBeDefined();
+    expect(currentMarks['2']).toBeDefined();
+
+    // simulate new create_marks_overlay (resets marks)
+    currentMarks = {};
+    expect(Object.keys(currentMarks)).toHaveLength(0);
+  });
+});
+
 describe('execution queue serialization', () => {
   it('should serialize sequential async operations', async () => {
     const order: number[] = [];

@@ -1,4 +1,4 @@
-"""Browser Agent -- FastAPI + LangGraph Planner-Actor-Validator agent with Gateway browser tools.
+"""Browser Agent -- FastAPI + LangGraph Progress Ledger agent with Gateway browser tools.
 
 Connects directly to the Gateway service to invoke browser tools on the
 user's Chrome extension. No longer depends on the Browser Relay MCP server.
@@ -11,15 +11,17 @@ webMCP-inspired tool invocation flow:
     -> Extension POST /browser-tools/result/{inv_id}
     -> Gateway Future resolved -> response returned to agent
 
-Agent architecture: Planner-Actor-Validator (P2-1)
-  planner -> actor -> tools -> validator -> planner (loop)
-  - Planner: lightweight LLM decides next action
-  - Actor: tool-calling LLM executes browser actions
-  - Validator: lightweight LLM checks if action succeeded
+Agent architecture: Progress Ledger (Magentic-One inspired)
+  planner -> actor -> tools -> progress_check -> route_after_progress
+  - Planner: lightweight LLM decides initial strategy (called once + on replan)
+  - Actor: tool-calling LLM executes browser actions (skips planner when progressing)
+  - ProgressCheck: lightweight LLM evaluates if task is advancing
+  - Replan: lightweight LLM generates new strategy when stalled (stall_count >= 3)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 from contextlib import asynccontextmanager
 from functools import partial
@@ -144,23 +146,24 @@ def _get_client() -> GatewayBrowserToolsClient:
 
 
 # ---------------------------------------------------------------------------
-# LangGraph state (P2-1: extended for Planner-Actor-Validator)
+# LangGraph state (Progress Ledger)
 # ---------------------------------------------------------------------------
 
 
 class AgentState(TypedDict, total=False):
     messages: Annotated[list[BaseMessage], add_messages]
     session_id: str
-    # Planner-Actor-Validator additions
-    validation_failed: bool  # True if last validation failed
-    retry_count: int  # How many times current action was retried
+    # Progress Ledger additions
+    stall_count: int           # Consecutive non-progress steps
+    progress_ledger: dict      # Latest output from progress_check_node
+    action_history: list[str]  # Recent tool call names (last 5, for loop detection)
 
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-MAX_VALIDATION_RETRIES = 2  # Maximum retries for a failed action
+MAX_STALL_COUNT = 3  # Trigger replan after this many consecutive stall steps
 
 
 # ---------------------------------------------------------------------------
@@ -168,18 +171,154 @@ MAX_VALIDATION_RETRIES = 2  # Maximum retries for a failed action
 # ---------------------------------------------------------------------------
 
 
-def _validate_session_id(session_id: str) -> dict[str, Any] | None:
-    """Return an error dict if session_id is invalid, else None."""
+def _validate_session_id(session_id: str) -> str | None:
+    """Return an error string if session_id is invalid, else None."""
     if not session_id or not session_id.strip():
-        return {
-            "error": (
-                "session_id is missing or empty. This is a critical error. "
-                "Always include the session_id from the conversation state "
-                "in every tool call."
-            ),
-            "success": False,
-        }
+        return (
+            "TOOL FAILED: session_id is missing or empty. "
+            "Always include the session_id from the conversation state "
+            "in every tool call."
+        )
     return None
+
+
+# Recovery hints per tool — shown to LLM when a tool fails.
+_RECOVERY_HINTS: dict[str, str] = {
+    "navigate": "Ensure the URL is valid and starts with http:// or https://.",
+    "click": (
+        "Try browser_get_structured_dom to find the correct selector, "
+        "or take a screenshot with marks and use browser_click_by_mark_id."
+    ),
+    "type": (
+        "Verify the input field is visible with browser_get_structured_dom before typing."
+    ),
+    "scroll": "Verify the target element or window is scrollable.",
+    "screenshot": "Ensure the AI tab is active and a page has loaded.",
+    "extract_content": (
+        "Try a more specific selector or use browser_get_structured_dom instead."
+    ),
+    "wait_for_element": (
+        "The element may use dynamic rendering. "
+        "Try a broader selector or increase timeout_ms."
+    ),
+    "get_page_info": "Navigate to a URL first so a page is loaded.",
+    "get_structured_dom": (
+        "The page may still be loading. "
+        "Try browser_wait_for_element or navigate first."
+    ),
+    "click_by_mark_id": (
+        "Marks expire when the page changes. "
+        "Take a new screenshot to refresh marks."
+    ),
+}
+
+
+def _format_aci_result(
+    tool_name: str,
+    success: bool,
+    result: dict | None,
+    error: str | None = None,
+) -> str:
+    """Format a tool result as a human-readable string for the LLM.
+
+    Failure path includes a recovery hint so the LLM can self-correct.
+    Success path is tool-specific and highlights actionable information.
+    """
+    if not success:
+        hint = _RECOVERY_HINTS.get(tool_name, "Try a different approach.")
+        return f"TOOL FAILED [{tool_name}]: {error}\nRecovery hint: {hint}"
+
+    r = result or {}
+
+    if tool_name == "navigate":
+        return f"Navigated to: {r.get('url', 'unknown')}"
+
+    if tool_name == "click":
+        return f"Clicked element: {r.get('clicked', r.get('selector', 'unknown'))}"
+
+    if tool_name == "click_by_mark_id":
+        return (
+            f"Clicked mark {r.get('mark_id', '?')}: "
+            f"{r.get('clicked_selector', 'unknown')}"
+        )
+
+    if tool_name == "type":
+        return f"Typed into field: '{r.get('typed', r.get('text', 'unknown'))}'"
+
+    if tool_name == "scroll":
+        scrolled = r.get("scrolled", {})
+        return (
+            f"Scrolled page: dx={scrolled.get('x', 0)}, dy={scrolled.get('y', 0)}"
+        )
+
+    if tool_name == "extract_content":
+        text = r.get("text", "")
+        if not text or not text.strip():
+            return (
+                "extract_content returned empty: no text found at this selector. "
+                "Try browser_get_structured_dom for page structure."
+            )
+        preview = text.strip()[:200]
+        suffix = "..." if len(text) > 200 else ""
+        return f"Extracted content ({len(text)} chars): {preview}{suffix}"
+
+    if tool_name == "wait_for_element":
+        found = r.get("found", False)
+        selector = r.get("selector", "unknown")
+        if not found:
+            hint = _RECOVERY_HINTS["wait_for_element"]
+            return f"Element NOT found: {selector}\nRecovery hint: {hint}"
+        return f"Element found: {selector}"
+
+    if tool_name == "get_page_info":
+        return (
+            f"Page: {r.get('title', 'unknown')} "
+            f"| URL: {r.get('url', 'unknown')} "
+            f"| State: {r.get('readyState', 'unknown')}"
+        )
+
+    if tool_name == "get_structured_dom":
+        elements = r.get("elements", [])
+        count = len(elements)
+        if count == 0:
+            return (
+                "get_structured_dom: no interactable elements found. "
+                "The page may still be loading or the content is not interactive."
+            )
+        lines = [f"Page: {r.get('title', '?')} ({r.get('url', '?')})"]
+        lines.append(f"Found {count} interactable elements:")
+        for el in elements:
+            idx = el.get("idx", "?")
+            selector = el.get("selector") or el.get("tag", "?")
+            text = (
+                el.get("text")
+                or el.get("ariaLabel")
+                or el.get("placeholder")
+                or ""
+            )
+            text_part = f" \u2014 {text[:60]}" if text else ""
+            lines.append(f"  [{idx}] {selector}{text_part}")
+        return "\n".join(lines)
+
+    if tool_name == "screenshot":
+        marks = r.get("marks", {})
+        screenshot = r.get("screenshot", "")
+        mark_count = len(marks)
+        if mark_count > 0:
+            mark_list = ", ".join(
+                f"[{k}]={v.get('tag', '?')}"
+                for k, v in list(marks.items())[:10]
+            )
+            suffix = "..." if mark_count > 10 else ""
+            return (
+                f"Screenshot captured with {mark_count} interactive element marks. "
+                f"Elements: {mark_list}{suffix}. "
+                "Use browser_click_by_mark_id(session_id=..., mark_id=N) "
+                "to click an element."
+            )
+        return f"Screenshot captured (no marks). Image data: {len(screenshot)} chars."
+
+    return f"Tool [{tool_name}] completed: {json.dumps(r)[:200]}"
 
 
 # ---------------------------------------------------------------------------
@@ -190,7 +329,7 @@ def _validate_session_id(session_id: str) -> dict[str, Any] | None:
 
 
 @tool
-async def browser_navigate(session_id: str, url: str) -> dict[str, Any]:
+async def browser_navigate(session_id: str, url: str) -> str:
     """Navigate the AI-controlled browser tab to a URL.
 
     Args:
@@ -199,7 +338,11 @@ async def browser_navigate(session_id: str, url: str) -> dict[str, Any]:
     """
     if err := _validate_session_id(session_id):
         return err
-    return await _get_client().invoke(session_id, "navigate", {"url": url})
+    try:
+        result = await _get_client().invoke(session_id, "navigate", {"url": url})
+        return _format_aci_result("navigate", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("navigate", False, None, str(e))
 
 
 @tool
@@ -208,7 +351,7 @@ async def browser_click(
     selector: str,
     fallback_selectors: list[str] | None = None,
     element_text: str | None = None,
-) -> dict[str, Any]:
+) -> str:
     """Click an element in the browser tab. Supports fallback selectors for resilience.
 
     Args:
@@ -224,7 +367,11 @@ async def browser_click(
         params["fallback_selectors"] = fallback_selectors
     if element_text:
         params["element_text"] = element_text
-    return await _get_client().invoke(session_id, "click", params)
+    try:
+        result = await _get_client().invoke(session_id, "click", params)
+        return _format_aci_result("click", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("click", False, None, str(e))
 
 
 @tool
@@ -233,7 +380,7 @@ async def browser_type(
     selector: str,
     text: str,
     clear_first: bool = True,
-) -> dict[str, Any]:
+) -> str:
     """Type text into an input field.
 
     Args:
@@ -244,11 +391,15 @@ async def browser_type(
     """
     if err := _validate_session_id(session_id):
         return err
-    return await _get_client().invoke(
-        session_id,
-        "type",
-        {"selector": selector, "text": text, "clear_first": clear_first},
-    )
+    try:
+        result = await _get_client().invoke(
+            session_id,
+            "type",
+            {"selector": selector, "text": text, "clear_first": clear_first},
+        )
+        return _format_aci_result("type", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("type", False, None, str(e))
 
 
 @tool
@@ -257,7 +408,7 @@ async def browser_scroll(
     direction: str = "down",
     amount: int = 300,
     selector: str | None = None,
-) -> dict[str, Any]:
+) -> str:
     """Scroll the page or a specific element.
 
     Args:
@@ -271,22 +422,30 @@ async def browser_scroll(
     params: dict[str, Any] = {"direction": direction, "amount": amount}
     if selector:
         params["selector"] = selector
-    return await _get_client().invoke(session_id, "scroll", params)
+    try:
+        result = await _get_client().invoke(session_id, "scroll", params)
+        return _format_aci_result("scroll", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("scroll", False, None, str(e))
 
 
 @tool
-async def browser_screenshot(session_id: str) -> dict[str, Any]:
-    """Capture a screenshot of the current browser tab.
+async def browser_screenshot(session_id: str) -> str:
+    """Capture a screenshot of the current browser tab with interactive element marks.
+
+    Returns an annotated screenshot with numbered red badges on interactive elements.
+    Use browser_click_by_mark_id to click on a marked element.
 
     Args:
         session_id: Active session ID.
-
-    Returns:
-        Dict with 'screenshot' key containing base64-encoded PNG.
     """
     if err := _validate_session_id(session_id):
         return err
-    return await _get_client().invoke(session_id, "screenshot", {})
+    try:
+        result = await _get_client().invoke(session_id, "screenshot", {})
+        return _format_aci_result("screenshot", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("screenshot", False, None, str(e))
 
 
 @tool
@@ -294,7 +453,7 @@ async def browser_extract_content(
     session_id: str,
     selector: str | None = None,
     include_html: bool = False,
-) -> dict[str, Any]:
+) -> str:
     """Extract text content from the page or a specific element.
 
     Args:
@@ -307,7 +466,11 @@ async def browser_extract_content(
     params: dict[str, Any] = {"include_html": include_html}
     if selector:
         params["selector"] = selector
-    return await _get_client().invoke(session_id, "extract_content", params)
+    try:
+        result = await _get_client().invoke(session_id, "extract_content", params)
+        return _format_aci_result("extract_content", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("extract_content", False, None, str(e))
 
 
 @tool
@@ -316,7 +479,7 @@ async def browser_wait_for_element(
     selector: str,
     timeout_ms: int = 10000,
     visible: bool = True,
-) -> dict[str, Any]:
+) -> str:
     """Wait for an element to appear in the DOM.
 
     Args:
@@ -327,15 +490,19 @@ async def browser_wait_for_element(
     """
     if err := _validate_session_id(session_id):
         return err
-    return await _get_client().invoke(
-        session_id,
-        "wait_for_element",
-        {"selector": selector, "timeout_ms": timeout_ms, "visible": visible},
-    )
+    try:
+        result = await _get_client().invoke(
+            session_id,
+            "wait_for_element",
+            {"selector": selector, "timeout_ms": timeout_ms, "visible": visible},
+        )
+        return _format_aci_result("wait_for_element", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("wait_for_element", False, None, str(e))
 
 
 @tool
-async def get_page_info(session_id: str) -> dict[str, Any]:
+async def get_page_info(session_id: str) -> str:
     """Get current page URL, title, and ready state.
 
     Args:
@@ -343,11 +510,15 @@ async def get_page_info(session_id: str) -> dict[str, Any]:
     """
     if err := _validate_session_id(session_id):
         return err
-    return await _get_client().invoke(session_id, "get_page_info", {})
+    try:
+        result = await _get_client().invoke(session_id, "get_page_info", {})
+        return _format_aci_result("get_page_info", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("get_page_info", False, None, str(e))
 
 
 @tool
-async def browser_get_structured_dom(session_id: str) -> dict[str, Any]:
+async def browser_get_structured_dom(session_id: str) -> str:
     """Get a compact, structured representation of interactive page elements.
 
     Returns only visible, interactable elements in the current viewport.
@@ -356,14 +527,36 @@ async def browser_get_structured_dom(session_id: str) -> dict[str, Any]:
 
     Args:
         session_id: Active session ID linked to the user's browser.
-
-    Returns:
-        Dict with 'url', 'title', 'interactable_count', 'elements' (up to 50),
-        and 'page_text_preview' (first 2000 chars of page text).
     """
     if err := _validate_session_id(session_id):
         return err
-    return await _get_client().invoke(session_id, "get_structured_dom", {})
+    try:
+        result = await _get_client().invoke(session_id, "get_structured_dom", {})
+        return _format_aci_result("get_structured_dom", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("get_structured_dom", False, None, str(e))
+
+
+@tool
+async def browser_click_by_mark_id(session_id: str, mark_id: int) -> str:
+    """Click an interactive element by its mark number from the last screenshot.
+
+    After calling browser_screenshot, elements are numbered with red badges.
+    Use this tool to click element [N] instead of guessing CSS selectors.
+
+    Args:
+        session_id: Active session ID.
+        mark_id: The number shown on the red badge in the screenshot.
+    """
+    if err := _validate_session_id(session_id):
+        return err
+    try:
+        result = await _get_client().invoke(
+            session_id, "click_by_mark_id", {"mark_id": mark_id}
+        )
+        return _format_aci_result("click_by_mark_id", True, result)
+    except RuntimeError as e:
+        return _format_aci_result("click_by_mark_id", False, None, str(e))
 
 
 BROWSER_TOOLS = [
@@ -372,6 +565,7 @@ BROWSER_TOOLS = [
     browser_type,
     browser_scroll,
     browser_screenshot,
+    browser_click_by_mark_id,
     browser_extract_content,
     browser_wait_for_element,
     get_page_info,
@@ -417,6 +611,12 @@ For YouTube tasks:
 - Use browser_get_structured_dom to find the search input
 - Search box selector: input#search or ytd-searchbox input
 - After search, click on the most relevant video result
+
+Set-of-Marks Screenshots:
+- browser_screenshot returns an annotated image with numbered red badges on interactive elements.
+- Use browser_click_by_mark_id(session_id=..., mark_id=N) to click the element labeled [N].
+- Marks expire when the page changes — take a new screenshot if unsure.
+- Prefer browser_get_structured_dom for finding elements without screenshots to save tokens.
 """
 
 PLANNER_SYSTEM_PROMPT = """\
@@ -432,19 +632,35 @@ Examples:
 Current session_id will be provided - always include it in tool calls.
 """
 
-VALIDATOR_SYSTEM_PROMPT = """\
-You are a browser action validator. Check if the last action succeeded.
+PROGRESS_CHECK_SYSTEM_PROMPT = """\
+You are a browser task progress checker. Analyze the recent actions and results,
+then output a JSON object (no markdown fences) with exactly these fields:
 
-Look at the most recent tool result and determine:
-1. Did the action execute without errors?
-2. Is the page in the expected state for the next step?
+{
+  "is_task_complete": true/false,
+  "is_making_progress": true/false,
+  "is_stuck_in_loop": true/false,
+  "next_action_hint": "brief description of what to do next (1 sentence)"
+}
 
-Respond with ONLY one word:
-- "success" if the action worked correctly
-- "retry" if the action failed but should be retried
-- "done" if the entire task is complete
+Rules:
+- is_task_complete: true only if the user's goal is fully achieved
+- is_making_progress: true if the last action moved the task forward (even partially)
+- is_stuck_in_loop: true if the same action was repeated 3+ times with the same result
+- next_action_hint: actionable suggestion for the actor's next step
 
-Do not add any explanation.
+Respond with ONLY the JSON object. No explanations outside the JSON.
+"""
+
+REPLAN_SYSTEM_PROMPT = """\
+You are a browser task replanner. The current approach is stuck.
+Analyze what has been tried, why it failed, and suggest a NEW strategy.
+
+Be concise. Output 1-2 sentences describing a different approach.
+Example: "The direct click approach failed. Try using browser_screenshot with marks
+to visually identify the target element, then use browser_click_by_mark_id."
+
+Do not repeat actions that have already failed.
 """
 
 
@@ -490,12 +706,12 @@ def _compress_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
 
 
 # ---------------------------------------------------------------------------
-# P2-1: Planner-Actor-Validator graph nodes
+# Progress Ledger graph nodes
 # ---------------------------------------------------------------------------
 
 
 async def planner_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
-    """Analyze current state and decide next action."""
+    """Analyze current state and decide initial strategy."""
     messages = _compress_messages(state["messages"])
     session_id = state.get("session_id", "")
 
@@ -510,16 +726,14 @@ async def planner_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
         messages = [SystemMessage(content=system_content), *messages[1:]]
 
     response = await llm.ainvoke(messages)
-    return {
-        "messages": [response],
-        "validation_failed": False,
-    }
+    return {"messages": [response]}
 
 
 async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any]:
-    """Execute the planned action using browser tools."""
+    """Execute the next browser action using tools."""
     messages = _compress_messages(state["messages"])
     session_id = state.get("session_id", "")
+    progress_ledger = state.get("progress_ledger") or {}
 
     system_content = SYSTEM_PROMPT
     if session_id:
@@ -528,6 +742,11 @@ async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any
             "Always use this session_id in your tool calls."
         )
 
+    # Inject progress hint from previous progress_check if available
+    hint = progress_ledger.get("next_action_hint", "")
+    if hint:
+        system_content += f"\n\nSuggested next action: {hint}"
+
     # Replace or inject system prompt
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=system_content), *messages]
@@ -535,52 +754,115 @@ async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any
         messages = [SystemMessage(content=system_content), *messages[1:]]
 
     response = await llm_with_tools.ainvoke(messages)
-    return {"messages": [response]}
+
+    # Track which tools were called in action_history (last 5)
+    action_history = list(state.get("action_history") or [])
+    if isinstance(response, AIMessage) and response.tool_calls:
+        for tc in response.tool_calls:
+            action_history.append(tc["name"])
+    action_history = action_history[-5:]  # keep only last 5
+
+    return {"messages": [response], "action_history": action_history}
 
 
-async def validator_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
-    """Verify if the last action succeeded."""
+async def progress_check_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
+    """Evaluate if the task is making progress and update the ledger."""
     messages = state["messages"]
 
-    # Find the most recent tool result
-    last_tool_result = None
+    # Collect recent tool results for analysis
+    recent_results: list[str] = []
     for msg in reversed(messages):
         if isinstance(msg, ToolMessage):
-            last_tool_result = msg.content
-            break
+            recent_results.insert(0, str(msg.content)[:300])
+            if len(recent_results) >= 3:
+                break
 
-    if last_tool_result is None:
-        # No tool was called, task may be done
-        return {"validation_failed": False, "retry_count": 0}
+    action_history = state.get("action_history") or []
+    stall_count = state.get("stall_count") or 0
 
-    # Quick validation using lightweight LLM
-    validation_input = [
-        SystemMessage(content=VALIDATOR_SYSTEM_PROMPT),
-        HumanMessage(content=f"Tool result: {str(last_tool_result)[:500]}"),
+    progress_input = [
+        SystemMessage(content=PROGRESS_CHECK_SYSTEM_PROMPT),
+        HumanMessage(
+            content=(
+                f"Recent tool results:\n{chr(10).join(recent_results)}\n\n"
+                f"Recent actions taken: {', '.join(action_history) or 'none'}"
+            )
+        ),
     ]
 
-    response = await llm.ainvoke(validation_input)
-    verdict = (
-        response.content.strip().lower()
-        if hasattr(response, "content")
-        else "success"
-    )
+    response = await llm.ainvoke(progress_input)
+    raw = response.content.strip() if hasattr(response, "content") else ""
 
-    if verdict == "retry":
-        current_retries = state.get("retry_count", 0) or 0
-        return {
-            "validation_failed": True,
-            "retry_count": current_retries + 1,
+    # Strip markdown fences if present (```json ... ```)
+    if raw.startswith("```"):
+        lines = raw.split("\n")
+        raw = "\n".join(
+            line for line in lines if not line.strip().startswith("```")
+        ).strip()
+
+    # Parse JSON; fall back to "making progress" to avoid false stalls
+    try:
+        ledger = json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        logger.warning("progress_check_node: failed to parse JSON, using fallback")
+        ledger = {
+            "is_task_complete": False,
+            "is_making_progress": True,
+            "is_stuck_in_loop": False,
+            "next_action_hint": "",
         }
 
+    # Update stall count
+    if ledger.get("is_making_progress", True):
+        new_stall_count = 0
+    else:
+        new_stall_count = stall_count + 1
+
+    # Append next_action_hint to action_history for context
+    updated_history = list(action_history)
+    hint = ledger.get("next_action_hint", "")
+    if hint:
+        updated_history.append(f"hint:{hint[:50]}")
+    updated_history = updated_history[-5:]
+
     return {
-        "validation_failed": False,
-        "retry_count": 0,
+        "progress_ledger": ledger,
+        "stall_count": new_stall_count,
+        "action_history": updated_history,
+    }
+
+
+async def replan_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
+    """Generate a new strategy when the agent is stuck."""
+    messages = _compress_messages(state["messages"])
+    session_id = state.get("session_id", "")
+
+    system_content = REPLAN_SYSTEM_PROMPT
+    if session_id:
+        system_content += f"\n\nCurrent session_id: {session_id}"
+
+    # Include a concise summary of recent failures
+    action_history = state.get("action_history") or []
+    replan_input = [
+        SystemMessage(content=system_content),
+        HumanMessage(
+            content=(
+                f"Actions tried so far: {', '.join(action_history) or 'none'}.\n"
+                "What different approach should be taken?"
+            )
+        ),
+    ]
+
+    response = await llm.ainvoke(replan_input)
+    return {
+        "messages": [response],
+        "stall_count": 0,
+        "action_history": [],
     }
 
 
 # ---------------------------------------------------------------------------
-# P2-1: Routing functions
+# Routing functions
 # ---------------------------------------------------------------------------
 
 
@@ -594,39 +876,55 @@ def route_after_actor(state: AgentState) -> str:
     return END
 
 
-def route_after_validator(state: AgentState) -> str:
-    """After validator: retry actor if failed, else go to planner for next step."""
-    validation_failed = state.get("validation_failed", False) or False
-    retry_count = state.get("retry_count", 0) or 0
+def route_after_progress(state: AgentState) -> str:
+    """After progress_check: route based on task state and stall count."""
+    ledger = state.get("progress_ledger") or {}
+    stall_count = state.get("stall_count") or 0
 
-    if validation_failed and retry_count < MAX_VALIDATION_RETRIES:
-        return "actor"  # retry
-    return "planner"  # next step or end
+    if ledger.get("is_task_complete", False):
+        return END
+
+    if ledger.get("is_stuck_in_loop", False) or stall_count >= MAX_STALL_COUNT:
+        return "replan"
+
+    # Making progress (or fallback) — skip planner, go directly to actor
+    return "actor"
 
 
 # ---------------------------------------------------------------------------
-# LangGraph graph builder (P2-1: Planner-Actor-Validator)
+# LangGraph graph builder (Progress Ledger)
 # ---------------------------------------------------------------------------
 
 
 def build_browser_graph(
     llm_with_tools: Any,
     planner_llm: Any,
-    validator_llm: Any,
     tools: list,
     checkpointer: Any,
 ) -> Any:
-    """Compile a Planner-Actor-Validator LangGraph for the browser agent."""
+    """Compile a Progress Ledger LangGraph for the browser agent.
+
+    Graph flow:
+      START → planner → actor → route_after_actor
+        → tools → progress_check → route_after_progress
+          → is_task_complete → END
+          → is_making_progress → actor   (planner skipped when progressing)
+          → stall_count >= 3 or stuck_in_loop → replan → actor
+        → no_tool_calls → END
+    """
     builder = StateGraph(AgentState)
 
     builder.add_node("planner", partial(planner_node, llm=planner_llm))
     builder.add_node("actor", partial(actor_node, llm_with_tools=llm_with_tools))
     builder.add_node("tools", ToolNode(tools))
-    builder.add_node("validator", partial(validator_node, llm=validator_llm))
+    builder.add_node(
+        "progress_check", partial(progress_check_node, llm=planner_llm)
+    )
+    builder.add_node("replan", partial(replan_node, llm=planner_llm))
 
     builder.set_entry_point("planner")
 
-    # planner -> actor (always, planner just plans)
+    # planner -> actor (always, initial planning only)
     builder.add_edge("planner", "actor")
 
     # actor -> tools (if tool calls) or END (if final answer)
@@ -636,15 +934,18 @@ def build_browser_graph(
         {"tools": "tools", END: END},
     )
 
-    # tools -> validator
-    builder.add_edge("tools", "validator")
+    # tools -> progress_check
+    builder.add_edge("tools", "progress_check")
 
-    # validator -> actor (retry) or planner (next step)
+    # progress_check -> actor / replan / END
     builder.add_conditional_edges(
-        "validator",
-        route_after_validator,
-        {"actor": "actor", "planner": "planner"},
+        "progress_check",
+        route_after_progress,
+        {"actor": "actor", "replan": "replan", END: END},
     )
+
+    # replan -> actor (re-execute with new strategy)
+    builder.add_edge("replan", "actor")
 
     return builder.compile(checkpointer=checkpointer)
 
@@ -678,15 +979,14 @@ async def lifespan(app: FastAPI):
     actor_llm = create_ollama_llm(agent_settings.browser_model, llm_settings)
     llm_with_tools = actor_llm.bind_tools(BROWSER_TOOLS)
 
-    # Planner and validator use lighter model for speed
+    # Planner/progress-check/replan use lighter model for speed
     planner_llm = create_ollama_llm(agent_settings.planner_model, llm_settings)
-    validator_llm = create_ollama_llm(agent_settings.planner_model, llm_settings)
 
     async with await AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
 
         app.state.graph = build_browser_graph(
-            llm_with_tools, planner_llm, validator_llm, BROWSER_TOOLS, checkpointer
+            llm_with_tools, planner_llm, BROWSER_TOOLS, checkpointer
         )
 
         logger.info(

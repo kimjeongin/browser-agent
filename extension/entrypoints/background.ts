@@ -99,22 +99,55 @@ async function navigateAgentTab(url: string): Promise<void> {
 /**
  * Handle a screenshot command using chrome.tabs.captureVisibleTab
  * (must run from background, not content script).
+ * Also requests Set-of-Marks overlay from the content script before capturing.
  */
-async function captureAgentTabScreenshot(): Promise<{ screenshot: string }> {
+async function captureAgentTabScreenshot(): Promise<{
+  screenshot: string;
+  marks: Record<string, { selector: string; tag: string }>;
+}> {
   const tabId = await ensureAgentTab();
   const tab = await browser.tabs.get(tabId);
   const windowId = tab.windowId;
 
-  // Make the AI tab active first
-  await browser.tabs.update(tabId, { active: true });
-  // Small delay to ensure the tab is rendered
-  await new Promise((r) => setTimeout(r, 300));
+  // Step 1: Request Set-of-Marks overlay from content script
+  let marks: Record<string, { selector: string; tag: string }> = {};
+  try {
+    const marksResult = await browser.tabs.sendMessage(tabId, {
+      type: 'EXECUTE_BROWSER_COMMAND',
+      command: {
+        command_id: 'marks-' + Date.now(),
+        action: 'create_marks_overlay',
+        params: {},
+      },
+    });
+    if (marksResult?.result?.marks) {
+      marks = marksResult.result.marks as Record<string, { selector: string; tag: string }>;
+    }
+  } catch {
+    // Content script may not be ready (e.g. chrome:// page) -- proceed without marks
+  }
 
+  // Step 2: Make the AI tab active and wait for render
+  await browser.tabs.update(tabId, { active: true });
+  await new Promise((r) => setTimeout(r, 150));
+
+  // Step 3: Capture the screenshot
   const dataUrl = await browser.tabs.captureVisibleTab(windowId!, {
     format: 'jpeg',
     quality: 65,
   });
-  return { screenshot: dataUrl };
+
+  // Step 4: Remove marks overlay (fire-and-forget)
+  browser.tabs.sendMessage(tabId, {
+    type: 'EXECUTE_BROWSER_COMMAND',
+    command: {
+      command_id: 'marks-remove-' + Date.now(),
+      action: 'remove_marks_overlay',
+      params: {},
+    },
+  }).catch(() => {});
+
+  return { screenshot: dataUrl, marks };
 }
 
 /**
