@@ -1,6 +1,5 @@
-"""Tests for P1-1 (get_structured_dom), P1-5 (session_id validation), P2-3 (context compression).
-
-Also covers P2-1 (Planner-Actor-Validator) graph structure and routing functions.
+"""Tests for browser tool output formatting (P0), session_id validation,
+Set-of-Marks tool (P1), context compression (P2-3), and graph structure.
 """
 
 import pytest
@@ -18,8 +17,9 @@ def test_validate_session_id_returns_error_for_empty():
 
     result = _validate_session_id("")
     assert result is not None
-    assert result["success"] is False
-    assert "session_id" in result["error"].lower()
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
+    assert "session_id" in result.lower()
 
 
 def test_validate_session_id_returns_error_for_whitespace():
@@ -27,7 +27,7 @@ def test_validate_session_id_returns_error_for_whitespace():
 
     result = _validate_session_id("   ")
     assert result is not None
-    assert result["success"] is False
+    assert "TOOL FAILED" in result
 
 
 def test_validate_session_id_returns_none_for_valid():
@@ -39,93 +39,296 @@ def test_validate_session_id_returns_none_for_valid():
 
 @pytest.mark.asyncio
 async def test_browser_navigate_returns_error_for_empty_session_id():
-    """browser_navigate should return error dict when session_id is empty."""
+    """browser_navigate should return TOOL FAILED string when session_id is empty."""
     from main import browser_navigate
 
     result = await browser_navigate.ainvoke(
         {"session_id": "", "url": "https://example.com"}
     )
-    assert result["success"] is False
-    assert "session_id" in result["error"].lower()
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
+    assert "session_id" in result.lower()
 
 
 @pytest.mark.asyncio
 async def test_browser_click_returns_error_for_empty_session_id():
-    """browser_click should return error dict when session_id is empty."""
+    """browser_click should return TOOL FAILED string when session_id is empty."""
     from main import browser_click
 
     result = await browser_click.ainvoke(
         {"session_id": "", "selector": "#btn"}
     )
-    assert result["success"] is False
-    assert "session_id" in result["error"].lower()
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_browser_type_returns_error_for_empty_session_id():
-    """browser_type should return error dict when session_id is empty."""
+    """browser_type should return TOOL FAILED string when session_id is empty."""
     from main import browser_type
 
     result = await browser_type.ainvoke(
         {"session_id": "", "selector": "#input", "text": "hello"}
     )
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_browser_scroll_returns_error_for_empty_session_id():
-    """browser_scroll should return error dict when session_id is empty."""
+    """browser_scroll should return TOOL FAILED string when session_id is empty."""
     from main import browser_scroll
 
     result = await browser_scroll.ainvoke({"session_id": ""})
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_browser_screenshot_returns_error_for_empty_session_id():
-    """browser_screenshot should return error dict when session_id is empty."""
+    """browser_screenshot should return TOOL FAILED string when session_id is empty."""
     from main import browser_screenshot
 
     result = await browser_screenshot.ainvoke({"session_id": ""})
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_browser_extract_content_returns_error_for_empty_session_id():
-    """browser_extract_content should return error dict when session_id is empty."""
+    """browser_extract_content should return TOOL FAILED string when session_id is empty."""
     from main import browser_extract_content
 
     result = await browser_extract_content.ainvoke({"session_id": ""})
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_browser_wait_for_element_returns_error_for_empty_session_id():
-    """browser_wait_for_element should return error dict when session_id is empty."""
+    """browser_wait_for_element should return TOOL FAILED string when session_id is empty."""
     from main import browser_wait_for_element
 
     result = await browser_wait_for_element.ainvoke(
         {"session_id": "", "selector": "#el"}
     )
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_get_page_info_returns_error_for_empty_session_id():
-    """get_page_info should return error dict when session_id is empty."""
+    """get_page_info should return TOOL FAILED string when session_id is empty."""
     from main import get_page_info
 
     result = await get_page_info.ainvoke({"session_id": ""})
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 @pytest.mark.asyncio
 async def test_browser_get_structured_dom_returns_error_for_empty_session_id():
-    """browser_get_structured_dom should return error when session_id is missing."""
+    """browser_get_structured_dom should return TOOL FAILED string when session_id is missing."""
     from main import browser_get_structured_dom
 
     result = await browser_get_structured_dom.ainvoke({"session_id": ""})
-    assert result["success"] is False
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
+
+
+# ---------------------------------------------------------------------------
+# P0: _format_aci_result helper tests
+# ---------------------------------------------------------------------------
+
+
+def test_format_aci_result_success_navigate():
+    from main import _format_aci_result
+
+    result = _format_aci_result("navigate", True, {"url": "https://example.com"})
+    assert result == "Navigated to: https://example.com"
+
+
+def test_format_aci_result_success_click():
+    from main import _format_aci_result
+
+    result = _format_aci_result("click", True, {"clicked": "#submit-btn"})
+    assert result == "Clicked element: #submit-btn"
+
+
+def test_format_aci_result_success_type():
+    from main import _format_aci_result
+
+    result = _format_aci_result("type", True, {"typed": "hello world"})
+    assert result == "Typed into field: 'hello world'"
+
+
+def test_format_aci_result_success_scroll():
+    from main import _format_aci_result
+
+    result = _format_aci_result("scroll", True, {"scrolled": {"x": 0, "y": 300}})
+    assert "300" in result
+    assert "Scrolled" in result
+
+
+def test_format_aci_result_empty_extract_content():
+    from main import _format_aci_result
+
+    result = _format_aci_result("extract_content", True, {"text": ""})
+    assert "returned empty" in result
+    assert "browser_get_structured_dom" in result
+
+
+def test_format_aci_result_failure_click_includes_recovery_hint():
+    from main import _format_aci_result
+
+    result = _format_aci_result("click", False, None, "Element not found: #btn")
+    assert "TOOL FAILED [click]" in result
+    assert "Recovery hint:" in result
+    assert "Element not found: #btn" in result
+
+
+def test_format_aci_result_dom_zero_elements():
+    from main import _format_aci_result
+
+    result = _format_aci_result(
+        "get_structured_dom", True, {"elements": [], "url": "https://x.com", "title": "X"}
+    )
+    assert "no interactable elements found" in result
+
+
+def test_format_aci_result_dom_with_elements_formats_list():
+    from main import _format_aci_result
+
+    elements = [
+        {"idx": 0, "tag": "input", "selector": "#search", "text": "Search", "ariaLabel": None, "placeholder": None},
+        {"idx": 1, "tag": "button", "selector": "#submit", "text": "Submit", "ariaLabel": None, "placeholder": None},
+    ]
+    result = _format_aci_result(
+        "get_structured_dom",
+        True,
+        {"elements": elements, "url": "https://x.com", "title": "X"},
+    )
+    assert "[0] #search" in result
+    assert "[1] #submit" in result
+    assert "Found 2 interactable elements" in result
+
+
+def test_format_aci_result_screenshot_with_marks():
+    from main import _format_aci_result
+
+    marks = {
+        "1": {"selector": "#btn", "tag": "button"},
+        "2": {"selector": "a.link", "tag": "a"},
+    }
+    result = _format_aci_result("screenshot", True, {"screenshot": "data:...", "marks": marks})
+    assert "2 interactive element marks" in result
+    assert "browser_click_by_mark_id" in result
+
+
+def test_format_aci_result_screenshot_without_marks():
+    from main import _format_aci_result
+
+    result = _format_aci_result("screenshot", True, {"screenshot": "data:img/jpeg;base64,abc123", "marks": {}})
+    assert "no marks" in result
+    assert "Screenshot captured" in result
+
+
+@pytest.mark.asyncio
+async def test_browser_navigate_returns_string_on_success():
+    """browser_navigate should return ACI-formatted string on success."""
+    from main import browser_navigate
+
+    mock_client = MagicMock()
+    mock_client.invoke = AsyncMock(return_value={"url": "https://example.com", "navigated": True})
+
+    with patch("main._gateway_client", mock_client):
+        result = await browser_navigate.ainvoke(
+            {"session_id": "sess-001", "url": "https://example.com"}
+        )
+
+    assert isinstance(result, str)
+    assert "Navigated to" in result
+    assert "https://example.com" in result
+
+
+@pytest.mark.asyncio
+async def test_browser_click_returns_string_on_success():
+    """browser_click should return ACI-formatted string on success."""
+    from main import browser_click
+
+    mock_client = MagicMock()
+    mock_client.invoke = AsyncMock(return_value={"clicked": "#search-btn"})
+
+    with patch("main._gateway_client", mock_client):
+        result = await browser_click.ainvoke(
+            {"session_id": "sess-001", "selector": "#search-btn"}
+        )
+
+    assert isinstance(result, str)
+    assert "Clicked element" in result
+    assert "#search-btn" in result
+
+
+@pytest.mark.asyncio
+async def test_browser_screenshot_returns_string_with_marks():
+    """browser_screenshot should return ACI-formatted string describing marks."""
+    from main import browser_screenshot
+
+    mock_client = MagicMock()
+    mock_client.invoke = AsyncMock(
+        return_value={
+            "screenshot": "data:image/jpeg;base64,abc",
+            "marks": {
+                "1": {"selector": "#btn", "tag": "button"},
+                "2": {"selector": "a.nav", "tag": "a"},
+            },
+        }
+    )
+
+    with patch("main._gateway_client", mock_client):
+        result = await browser_screenshot.ainvoke({"session_id": "sess-001"})
+
+    assert isinstance(result, str)
+    assert "2 interactive element marks" in result
+    assert "browser_click_by_mark_id" in result
+
+
+# ---------------------------------------------------------------------------
+# P1: browser_click_by_mark_id tool
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_browser_click_by_mark_id_calls_gateway_with_correct_params():
+    """browser_click_by_mark_id should invoke 'click_by_mark_id' with mark_id param."""
+    from main import browser_click_by_mark_id
+
+    mock_client = MagicMock()
+    mock_client.invoke = AsyncMock(
+        return_value={"mark_id": 3, "clicked_selector": "#submit-btn"}
+    )
+
+    with patch("main._gateway_client", mock_client):
+        result = await browser_click_by_mark_id.ainvoke(
+            {"session_id": "sess-001", "mark_id": 3}
+        )
+
+    mock_client.invoke.assert_awaited_once_with(
+        "sess-001", "click_by_mark_id", {"mark_id": 3}
+    )
+    assert isinstance(result, str)
+    assert "Clicked mark 3" in result
+    assert "#submit-btn" in result
+
+
+@pytest.mark.asyncio
+async def test_browser_click_by_mark_id_returns_aci_error_for_empty_session_id():
+    """browser_click_by_mark_id should return TOOL FAILED string for empty session_id."""
+    from main import browser_click_by_mark_id
+
+    result = await browser_click_by_mark_id.ainvoke({"session_id": "", "mark_id": 1})
+    assert isinstance(result, str)
+    assert "TOOL FAILED" in result
 
 
 # ---------------------------------------------------------------------------
@@ -251,7 +454,7 @@ async def test_browser_get_structured_dom_calls_gateway():
         return_value={
             "url": "https://example.com",
             "title": "Example",
-            "interactable_count": 5,
+            "interactable_count": 0,
             "elements": [],
             "page_text_preview": "Example page",
         }
@@ -263,8 +466,9 @@ async def test_browser_get_structured_dom_calls_gateway():
         )
 
     mock_client.invoke.assert_awaited_once_with("sess-001", "get_structured_dom", {})
-    assert result["url"] == "https://example.com"
-    assert result["interactable_count"] == 5
+    # Returns ACI-formatted string now
+    assert isinstance(result, str)
+    assert "no interactable elements found" in result
 
 
 # ---------------------------------------------------------------------------
@@ -273,7 +477,7 @@ async def test_browser_get_structured_dom_calls_gateway():
 
 
 def test_build_browser_graph_compiles_without_error():
-    """Graph should compile successfully with planner, actor, tools, validator."""
+    """Graph should compile successfully with planner, actor, tools, progress_check, replan."""
     from main import BROWSER_TOOLS, build_browser_graph
 
     mock_llm = MagicMock()
@@ -282,7 +486,6 @@ def test_build_browser_graph_compiles_without_error():
     graph = build_browser_graph(
         llm_with_tools=mock_llm,
         planner_llm=mock_llm,
-        validator_llm=mock_llm,
         tools=BROWSER_TOOLS,
         checkpointer=None,
     )
@@ -302,8 +505,9 @@ def test_route_after_actor_returns_tools_when_tool_calls():
     state = {
         "messages": [AIMessage(content="", tool_calls=[tool_call])],
         "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
+        "stall_count": 0,
+        "progress_ledger": {},
+        "action_history": [],
     }
 
     result = route_after_actor(state)
@@ -319,57 +523,13 @@ def test_route_after_actor_returns_end_when_no_tool_calls():
     state = {
         "messages": [AIMessage(content="Task completed!")],
         "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
+        "stall_count": 0,
+        "progress_ledger": {},
+        "action_history": [],
     }
 
     result = route_after_actor(state)
     assert result == GRAPH_END
-
-
-def test_route_after_validator_retries_on_failure():
-    """When validation fails and retries < max, should route to actor."""
-    from main import MAX_VALIDATION_RETRIES, route_after_validator
-
-    state = {
-        "messages": [],
-        "session_id": "sess-001",
-        "validation_failed": True,
-        "retry_count": MAX_VALIDATION_RETRIES - 1,
-    }
-
-    result = route_after_validator(state)
-    assert result == "actor"
-
-
-def test_route_after_validator_goes_to_planner_when_max_retries_exceeded():
-    """When max retries exceeded, should route to planner."""
-    from main import MAX_VALIDATION_RETRIES, route_after_validator
-
-    state = {
-        "messages": [],
-        "session_id": "sess-001",
-        "validation_failed": True,
-        "retry_count": MAX_VALIDATION_RETRIES,
-    }
-
-    result = route_after_validator(state)
-    assert result == "planner"
-
-
-def test_route_after_validator_goes_to_planner_on_success():
-    """When validation succeeds, should route to planner for next step."""
-    from main import route_after_validator
-
-    state = {
-        "messages": [],
-        "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
-    }
-
-    result = route_after_validator(state)
-    assert result == "planner"
 
 
 # ---------------------------------------------------------------------------
@@ -380,7 +540,7 @@ def test_route_after_validator_goes_to_planner_on_success():
 @pytest.mark.asyncio
 async def test_planner_node_injects_planner_system_prompt():
     """Planner node should use PLANNER_SYSTEM_PROMPT."""
-    from main import PLANNER_SYSTEM_PROMPT, planner_node
+    from main import planner_node
 
     mock_llm = MagicMock()
     mock_response = AIMessage(content="Navigate to YouTube.")
@@ -389,8 +549,9 @@ async def test_planner_node_injects_planner_system_prompt():
     state = {
         "messages": [HumanMessage(content="Search YouTube for cats")],
         "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
+        "stall_count": 0,
+        "progress_ledger": {},
+        "action_history": [],
     }
 
     result = await planner_node(state, llm=mock_llm)
@@ -399,7 +560,7 @@ async def test_planner_node_injects_planner_system_prompt():
     call_args = mock_llm.ainvoke.call_args[0][0]
     assert isinstance(call_args[0], SystemMessage)
     assert "planner" in call_args[0].content.lower()
-    assert result["validation_failed"] is False
+    assert len(result["messages"]) == 1
 
 
 @pytest.mark.asyncio
@@ -414,8 +575,9 @@ async def test_actor_node_injects_system_prompt_with_session_id():
     state = {
         "messages": [HumanMessage(content="Navigate to YouTube")],
         "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
+        "stall_count": 0,
+        "progress_ledger": {},
+        "action_history": [],
     }
 
     result = await actor_node(state, llm_with_tools=mock_llm)
@@ -424,70 +586,3 @@ async def test_actor_node_injects_system_prompt_with_session_id():
     assert isinstance(call_args[0], SystemMessage)
     assert "sess-001" in call_args[0].content
     assert len(result["messages"]) == 1
-
-
-@pytest.mark.asyncio
-async def test_validator_node_returns_success_for_valid_result():
-    """Validator should return validation_failed=False for 'success' verdict."""
-    from main import validator_node
-
-    mock_llm = MagicMock()
-    mock_response = AIMessage(content="success")
-    mock_llm.ainvoke = AsyncMock(return_value=mock_response)
-
-    state = {
-        "messages": [
-            HumanMessage(content="Navigate"),
-            _make_tool_message('{"url": "https://youtube.com"}', "call-1"),
-        ],
-        "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
-    }
-
-    result = await validator_node(state, llm=mock_llm)
-    assert result["validation_failed"] is False
-    assert result["retry_count"] == 0
-
-
-@pytest.mark.asyncio
-async def test_validator_node_returns_retry_on_failure():
-    """Validator should set validation_failed=True and increment retry_count."""
-    from main import validator_node
-
-    mock_llm = MagicMock()
-    mock_response = AIMessage(content="retry")
-    mock_llm.ainvoke = AsyncMock(return_value=mock_response)
-
-    state = {
-        "messages": [
-            HumanMessage(content="Click button"),
-            _make_tool_message('{"error": "Element not found"}', "call-1"),
-        ],
-        "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 1,
-    }
-
-    result = await validator_node(state, llm=mock_llm)
-    assert result["validation_failed"] is True
-    assert result["retry_count"] == 2
-
-
-@pytest.mark.asyncio
-async def test_validator_node_handles_no_tool_messages():
-    """Validator should return success when no ToolMessage found."""
-    from main import validator_node
-
-    mock_llm = MagicMock()
-
-    state = {
-        "messages": [HumanMessage(content="Hello")],
-        "session_id": "sess-001",
-        "validation_failed": False,
-        "retry_count": 0,
-    }
-
-    result = await validator_node(state, llm=mock_llm)
-    assert result["validation_failed"] is False
-    assert result["retry_count"] == 0
