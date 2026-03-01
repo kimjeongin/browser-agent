@@ -9,8 +9,9 @@ class LLMSettings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     ollama_base_url: str = "http://host.docker.internal:11434"
-    orchestrator_model: str = "llama3.1:8b"
-    browser_agent_model: str = "qwen2.5:14b"
-    chat_agent_model: str = "qwen2.5:7b"
+    orchestrator_model: str = "qwen3:8b"
+    browser_agent_model: str = "qwen3:14b"
+    chat_agent_model: str = "qwen3:8b"
+    vision_model: str = "qwen3vl:8b"
     llm_temperature: float = 0.0
     llm_num_ctx: int = 8192
