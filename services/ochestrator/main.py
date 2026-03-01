@@ -3,13 +3,16 @@
 import json
 import logging
 import re
+import uuid
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 from functools import partial
 from typing import Annotated, Any
 
 import httpx
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import StreamingResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
@@ -19,7 +22,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import TypedDict
 
 from shared.acp.client import ACPClient
-from shared.acp.server import create_acp_router
+from shared.acp.server import RunRequest, create_acp_router
 from shared.llm.factory import create_ollama_llm
 from shared.llm.settings import LLMSettings
 
@@ -290,6 +293,10 @@ async def lifespan(app: FastAPI):
             browser_client=browser_client,
             checkpointer=checkpointer,
         )
+        # Store for the custom streaming endpoint
+        app.state.llm = llm
+        app.state.chat_client = chat_client
+        app.state.browser_client = browser_client
 
         logger.info(
             "Orchestrator ready (chat=%s, browser=%s)",
@@ -327,6 +334,83 @@ async def health() -> dict[str, Any]:
         "chat_agent": "ok" if chat_ok else "unavailable",
         "browser_agent": "ok" if browser_ok else "unavailable",
     }
+
+
+@app.post("/runs/stream")
+async def stream_run(body: RunRequest, request: Request) -> StreamingResponse:
+    """Classify intent synchronously then stream tokens from the sub-agent.
+
+    Two-phase approach:
+    1. Run the supervisor LLM once (sync) to decide chat_agent vs browser_agent.
+    2. Call the classified sub-agent's /runs/stream and pipe tokens back.
+
+    This gives real token-level streaming because we stream directly from the
+    LLM running inside the sub-agent service, rather than running the full
+    orchestrator LangGraph (which would only yield the supervisor's
+    classification JSON as streaming tokens).
+    """
+    _llm: BaseChatModel = request.app.state.llm
+    _chat_client: ACPClient = request.app.state.chat_client
+    _browser_client: ACPClient = request.app.state.browser_client
+    run_id = body.run_id or str(uuid.uuid4())
+
+    # ── Phase 1: classify intent synchronously ──────────────────────────────
+    last_human = ""
+    for msg in reversed(body.input.get("messages", [])):
+        if isinstance(msg, dict) and msg.get("role") == "human":
+            last_human = msg.get("content", "")
+            break
+
+    agent = "chat_agent"
+    if last_human:
+        try:
+            classification_msgs = [
+                SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
+                HumanMessage(content=last_human),
+            ]
+            response = await _llm.ainvoke(classification_msgs)
+            response_text = (
+                response.content
+                if isinstance(response.content, str)
+                else str(response.content)
+            )
+            agent = _parse_agent_from_response(response_text)
+        except Exception:
+            logger.exception("Classification failed, defaulting to chat_agent")
+
+    logger.info(
+        "Stream run: intent=%s thread=%s", agent, body.thread_id
+    )
+
+    # ── Phase 2: stream from the classified sub-agent ───────────────────────
+    if agent == "browser_agent":
+        client = _browser_client
+        # Browser agent needs session_id in the input for tool calls
+        sub_input = body.input
+    else:
+        client = _chat_client
+        # Chat agent only accepts messages (no session_id in its state schema)
+        sub_input = {"messages": body.input.get("messages", [])}
+
+    async def generator() -> AsyncGenerator[str, None]:
+        try:
+            async for event in client.run_stream(
+                thread_id=body.thread_id,
+                input=sub_input,
+                run_id=run_id,
+            ):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            logger.exception("Sub-agent stream failed (agent=%s)", agent)
+            yield (
+                f"data: {json.dumps({'type': 'error', 'error': str(exc), 'run_id': run_id}, ensure_ascii=False)}\n\n"
+            )
+
+    return StreamingResponse(
+        generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 router = create_acp_router(lambda request: request.app.state.graph)

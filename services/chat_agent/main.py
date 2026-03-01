@@ -216,7 +216,7 @@ async def lifespan(app: FastAPI):
         "postgresql+asyncpg://", "postgresql://"
     )
 
-    async with await AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
+    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
 
         llm = create_ollama_llm(settings.chat_model, llm_settings)

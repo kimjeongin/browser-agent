@@ -81,6 +81,11 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
         graph = graph_factory(request)
 
         async def event_generator() -> AsyncGenerator[str, None]:
+            tokens_emitted = False
+            # Fallback: capture final AIMessage content when no tokens stream
+            # (e.g. when LLM runs in a sub-service called via synchronous HTTP)
+            last_ai_content = ""
+
             try:
                 async for event in graph.astream_events(
                     body.input,
@@ -102,7 +107,27 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
                             else str(content)
                         )
                         if text:
+                            tokens_emitted = True
                             data = {"type": "token", "content": text}
+
+                    elif kind == "on_chain_end":
+                        # Capture the last AI message produced by any node.
+                        # This is the fallback path for orchestrators that call
+                        # sub-agents via synchronous HTTP (no token streaming).
+                        output = event.get("data", {}).get("output", {})
+                        if isinstance(output, dict):
+                            msgs = output.get("messages", [])
+                            if msgs:
+                                last_msg = msgs[-1]
+                                text = ""
+                                if hasattr(last_msg, "content") and isinstance(
+                                    last_msg.content, str
+                                ):
+                                    text = last_msg.content
+                                elif isinstance(last_msg, dict):
+                                    text = last_msg.get("content", "")
+                                if text:
+                                    last_ai_content = text
 
                     elif kind == "on_tool_start":
                         data = {
@@ -120,6 +145,12 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
 
                     if data is not None:
                         yield f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+                # Emit the final answer as a single token if nothing streamed
+                if not tokens_emitted and last_ai_content:
+                    yield (
+                        f"data: {json.dumps({'type': 'token', 'content': last_ai_content}, ensure_ascii=False)}\n\n"
+                    )
 
                 # Signal completion
                 yield f"data: {json.dumps({'type': 'done', 'run_id': run_id})}\n\n"

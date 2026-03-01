@@ -272,7 +272,17 @@ async function login(): Promise<{
 
     setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
 
-    const session = await gateway.createSession();
+    let session: { session_id: string };
+    try {
+      session = await gateway.createSession();
+    } catch (err) {
+      // Gateway 연결 실패 시 토큰도 함께 초기화해 불일치 상태 방지
+      _accessToken = null;
+      _tokenExpiry = null;
+      await browser.storage.session.remove('refreshToken');
+      throw err;
+    }
+
     _sessionId = session.session_id;
     await browser.storage.local.set({ sessionId: _sessionId });
 

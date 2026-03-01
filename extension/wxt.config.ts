@@ -11,6 +11,7 @@ export default defineConfig({
       'identity',
       'sidePanel',
       'tabs',
+      'tabGroups',
       'activeTab',
       'scripting',
     ],

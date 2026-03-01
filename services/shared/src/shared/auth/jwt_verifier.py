@@ -20,18 +20,34 @@ class KeycloakJWTVerifier:
     network calls on every request.
     """
 
-    def __init__(self, realm_url: str, audience: str) -> None:
+    def __init__(
+        self,
+        realm_url: str,
+        audience: str,
+        jwks_url: str | None = None,
+    ) -> None:
         """Initialise the verifier.
 
         Args:
-            realm_url: Full Keycloak realm URL,
-                       e.g. ``http://keycloak:8080/realms/browser-agent``.
+            realm_url: Public Keycloak realm URL used for issuer validation,
+                       e.g. ``http://localhost:8080/realms/browser-agent``.
+                       Must match the ``iss`` claim in issued JWTs.
             audience: Expected ``aud`` claim value.
+            jwks_url: Optional URL for fetching JWKS keys. Defaults to
+                      ``{realm_url}/protocol/openid-connect/certs``.
+                      Override with an internal URL (e.g. Docker service name)
+                      so the Gateway can reach Keycloak without going through
+                      the public network while still validating against the
+                      public issuer.
         """
         # Strip trailing slash for consistent URL construction
         self._realm_url = realm_url.rstrip("/")
         self._audience = audience
-        self._jwks_uri = f"{self._realm_url}/protocol/openid-connect/certs"
+        self._jwks_uri = (
+            jwks_url
+            if jwks_url
+            else f"{self._realm_url}/protocol/openid-connect/certs"
+        )
         self._issuer = self._realm_url
         self._jwks_cache: TTLCache[str, dict[str, Any]] = TTLCache(
             maxsize=_JWKS_CACHE_MAXSIZE,

@@ -51,7 +51,13 @@ class Settings(BaseSettings):
         "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
     )
     orchestrator_url: str = "http://orchestrator:8001"
-    keycloak_realm_url: str = "http://keycloak:8080/realms/browser-agent"
+    # Public realm URL — must match the ``iss`` claim in JWTs issued by Keycloak.
+    # Controlled by KC_HOSTNAME on the Keycloak side.
+    keycloak_realm_url: str = "http://localhost:8080/realms/browser-agent"
+    # Internal URL for fetching JWKS keys. Allows the Gateway to reach Keycloak
+    # via Docker-internal DNS while validating the issuer against the public URL.
+    # If empty, falls back to keycloak_realm_url (same URL for both).
+    keycloak_jwks_url: str = ""
     keycloak_audience: str = "browser-agent-extension"
     session_ttl: int = 86400  # 24 hours
     browser_tool_timeout: float = 60.0  # seconds to wait for extension result
@@ -250,6 +256,7 @@ async def lifespan(app: FastAPI):
     app.state.verifier = KeycloakJWTVerifier(
         realm_url=settings.keycloak_realm_url,
         audience=settings.keycloak_audience,
+        jwks_url=settings.keycloak_jwks_url or None,
     )
 
     # ACP client for Orchestrator
@@ -490,9 +497,9 @@ async def chat_stream(
                     {"type": "error", "error": "Orchestrator stream failed"}
                 )
             }
-
-        session.last_activity = datetime.now(timezone.utc)
-        _set_session(session)
+        finally:
+            session.last_activity = datetime.now(timezone.utc)
+            _set_session(session)
 
     return EventSourceResponse(_event_generator())
 
