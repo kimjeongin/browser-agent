@@ -48,6 +48,7 @@ services:
       KC_HOSTNAME: localhost
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
+      KC_HEALTH_ENABLED: "true"
     command: start-dev --import-realm
     volumes:
       - ./keycloak:/opt/keycloak/data/import
@@ -55,8 +56,11 @@ services:
       postgres:
         condition: service_healthy
     healthcheck:
+      # Keycloak 24+: health endpoint moved to management port (9000).
+      # UBI9-minimal image has no curl/wget — use bash /dev/tcp instead.
       test:
-        ["CMD-SHELL", "curl -f http://localhost:8080/health/ready || exit 1"]
+        - "CMD-SHELL"
+        - "exec 3<>/dev/tcp/localhost/9000 2>/dev/null && printf 'GET /health/ready HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && timeout 5 cat <&3 | grep -qi UP || exit 1"
       interval: 15s
       timeout: 10s
       retries: 10

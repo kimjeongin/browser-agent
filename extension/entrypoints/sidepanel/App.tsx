@@ -34,7 +34,7 @@ function LoginScreen({ onLogin }: { onLogin: () => void }) {
   };
 
   return (
-    <div className="flex flex-col items-center justify-center h-full px-8 bg-surface-50 text-text-primary">
+    <div className="flex flex-col items-center justify-center h-screen px-8 bg-surface-50 text-text-primary">
       {/* Logo with ambient glow */}
       <div className="relative mb-8">
         <WrenLogo className="w-12 h-12 text-accent-300 relative z-10" />
@@ -187,7 +187,30 @@ export default function App() {
 
   const handleSend = useCallback(async (overrideContent?: string) => {
     const content = (overrideContent ?? input).trim();
-    if (!content || !sessionId || isLoading) return;
+    if (!content || isLoading) return;
+
+    // sessionId가 null이면 background에서 복구 시도
+    let activeSessionId = sessionId;
+    if (!activeSessionId) {
+      try {
+        const result = await browser.runtime.sendMessage({ type: 'GET_SESSION' });
+        if (result.success && result.data?.sessionId) {
+          activeSessionId = result.data.sessionId as string;
+          setSession(activeSessionId);
+        }
+      } catch {
+        // ignore, will fail below
+      }
+    }
+
+    if (!activeSessionId) {
+      addMessage({ role: 'user', content });
+      const aiMsgId = addMessage({ role: 'assistant', content: '', isStreaming: true });
+      appendToMessage(aiMsgId, '세션이 만료되었습니다. 로그아웃 후 다시 로그인해주세요.');
+      finalizeMessage(aiMsgId);
+      setInput('');
+      return;
+    }
 
     setInput('');
     setLoading(true);
@@ -211,7 +234,7 @@ export default function App() {
       if (!tokenResult.success || !tokenResult.data)
         throw new Error('인증이 필요합니다. 다시 로그인해주세요.');
 
-      const url = `${config.apiBaseUrl}/sessions/${sessionId}/chat/stream?content=${encodeURIComponent(content)}`;
+      const url = `${config.apiBaseUrl}/sessions/${activeSessionId}/chat/stream?content=${encodeURIComponent(content)}`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${tokenResult.data as string}` },
       });
@@ -227,7 +250,9 @@ export default function App() {
         const { done, value } = await reader.read();
         if (done) break;
 
-        buffer += decoder.decode(value, { stream: true });
+        // sse_starlette uses CRLF (\r\n) line endings by default.
+        // Normalize to LF so that \n\n correctly splits SSE messages.
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
         const chunks = buffer.split('\n\n');
         buffer = chunks.pop() ?? '';
 
@@ -296,6 +321,7 @@ export default function App() {
     input,
     sessionId,
     isLoading,
+    setSession,
     setLoading,
     clearToolSteps,
     addMessage,
@@ -361,7 +387,7 @@ export default function App() {
             {messages.map((msg) =>
               msg.role === 'user' ? (
                 <UserMessage key={msg.id} message={msg} />
-              ) : (
+              ) : msg.isStreaming && !msg.content ? null : (
                 <AssistantMessage key={msg.id} message={msg} />
               ),
             )}

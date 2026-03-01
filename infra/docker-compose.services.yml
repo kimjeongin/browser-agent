@@ -12,7 +12,8 @@ services:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       ORCHESTRATOR_URL: http://orchestrator:8001
-      KEYCLOAK_REALM_URL: http://keycloak:8080/realms/browser-agent
+      KEYCLOAK_REALM_URL: http://localhost:8080/realms/browser-agent
+      KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/browser-agent/protocol/openid-connect/certs
       KEYCLOAK_AUDIENCE: browser-agent-extension
       BROWSER_TOOL_TIMEOUT: "60"
     depends_on:
