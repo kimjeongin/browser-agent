@@ -1,1 +1,171 @@
 @import "tailwindcss";
+
+/* ============================================================
+   Pretendard Variable — Korean-first premium font
+   (bundled at /fonts/PretendardVariable.woff2)
+   ============================================================ */
+@font-face {
+  font-family: 'Pretendard Variable';
+  font-weight: 45 920;
+  font-style: normal;
+  font-display: swap;
+  src: url('/fonts/PretendardVariable.woff2') format('woff2-variations');
+}
+
+/* ============================================================
+   Design Token System — Wren Extension
+   ============================================================ */
+@theme {
+  /* --- Typography --- */
+  --font-sans: 'Pretendard Variable', -apple-system, BlinkMacSystemFont,
+    'Noto Sans KR', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', ui-monospace, monospace;
+
+  /* --- Surface Colors (Warm Dark — not cold gray) --- */
+  --color-surface-0: #0c0d10;
+  --color-surface-50: #12131a;
+  --color-surface-100: #1a1b24;
+  --color-surface-150: #22232e;
+  --color-surface-200: #2a2b38;
+  --color-surface-300: #383948;
+
+  /* --- Text --- */
+  --color-text-primary: #eeeef0;
+  --color-text-secondary: #9b9cae;
+  --color-text-tertiary: #6b6c7e;
+  --color-text-inverse: #0c0d10;
+
+  /* --- Accent: Celestial Blue (사용자 액션) --- */
+  --color-accent-200: #8ec5f5;
+  --color-accent-300: #63b3ed;
+  --color-accent-400: #4299e1;
+  --color-accent-500: #3182ce;
+  --color-accent-subtle: color-mix(in srgb, #63b3ed 8%, transparent);
+  --color-accent-muted: color-mix(in srgb, #63b3ed 15%, transparent);
+
+  /* --- Agent: Star Gold (에이전트 / 브라우저 제어) --- */
+  --color-agent-300: #f6c445;
+  --color-agent-400: #eab308;
+  --color-agent-subtle: color-mix(in srgb, #f6c445 8%, transparent);
+  --color-agent-muted: color-mix(in srgb, #f6c445 15%, transparent);
+  --color-agent-glow: color-mix(in srgb, #f6c445 30%, transparent);
+
+  /* --- Status --- */
+  --color-success: #34d399;
+  --color-success-subtle: color-mix(in srgb, #34d399 10%, transparent);
+  --color-error: #f87171;
+  --color-error-subtle: color-mix(in srgb, #f87171 10%, transparent);
+
+  /* --- Transitions --- */
+  --duration-fast: 100ms;
+  --duration-normal: 200ms;
+  --duration-slow: 350ms;
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+
+  /* --- Shadows --- */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.2);
+  --shadow-md: 0 2px 8px rgba(0, 0, 0, 0.25), 0 1px 2px rgba(0, 0, 0, 0.15);
+  --shadow-glow-accent: 0 0 0 2px color-mix(in srgb, #63b3ed 25%, transparent);
+  --shadow-glow-agent: 0 0 16px color-mix(in srgb, #f6c445 30%, transparent);
+
+  /* --- Animation Utilities --- */
+  --animate-shimmer: shimmer 1.5s linear infinite;
+  --animate-slide-down: slide-down 250ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-slide-up: slide-up 200ms cubic-bezier(0.16, 1, 0.3, 1) both;
+  --animate-wren-pulse: wren-pulse 2s ease-in-out infinite;
+  --animate-fade-in: fade-in 200ms ease-out both;
+}
+
+/* ============================================================
+   Keyframe Animations
+   ============================================================ */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+@keyframes slide-down {
+  from {
+    opacity: 0;
+    transform: translateY(-8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes slide-up {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes wren-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.65;
+    transform: scale(1.12);
+  }
+}
+
+@keyframes fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+/* ============================================================
+   Accessibility — Respect prefers-reduced-motion
+   ============================================================ */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* ============================================================
+   Base Styles
+   ============================================================ */
+html,
+body {
+  background-color: #12131a;
+  color: #eeeef0;
+  font-family: 'Pretendard Variable', -apple-system, BlinkMacSystemFont,
+    'Noto Sans KR', system-ui, sans-serif;
+}
+
+/* Custom scrollbar — minimal, matches dark theme */
+::-webkit-scrollbar {
+  width: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a2b38;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #383948;
+}
