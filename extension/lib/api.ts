@@ -99,7 +99,8 @@ export class GatewayClient {
       while (true) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        // sse_starlette uses CRLF (\r\n) line endings — normalize to LF.
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
 
         const lines = buffer.split('\n\n');
         buffer = lines.pop() ?? '';
@@ -151,7 +152,8 @@ export class GatewayClient {
       while (!cancelled) {
         const { done, value } = await reader.read();
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        // sse_starlette uses CRLF (\r\n) line endings — normalize to LF.
+        buffer += decoder.decode(value, { stream: true }).replace(/\r\n/g, '\n');
         const lines = buffer.split('\n\n');
         buffer = lines.pop() ?? '';
         for (const chunk of lines) {
