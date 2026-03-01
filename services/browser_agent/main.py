@@ -62,8 +62,9 @@ class BrowserAgentSettings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
     )
-    browser_model: str = "qwen2.5:14b"
-    planner_model: str = "llama3.1:8b"  # lighter model for planning/validation
+    browser_model: str = "qwen3:14b"
+    planner_model: str = "qwen3:8b"  # lighter model for planning/validation
+    vision_model: str = "qwen3vl:8b"  # vision-language model for DOM fallback
     gateway_url: str = "http://gateway:8000"
     browser_tool_timeout: float = 65.0  # slightly longer than gateway timeout
 
@@ -135,8 +136,9 @@ class GatewayBrowserToolsClient:
         return data.get("result", data)
 
 
-# Module-level client singleton (initialised in lifespan)
+# Module-level singletons (initialised in lifespan)
 _gateway_client: GatewayBrowserToolsClient | None = None
+_vl_llm: Any = None  # Vision-language model for DOM-failure fallback
 
 
 def _get_client() -> GatewayBrowserToolsClient:
@@ -559,6 +561,84 @@ async def browser_click_by_mark_id(session_id: str, mark_id: int) -> str:
         return _format_aci_result("click_by_mark_id", False, None, str(e))
 
 
+@tool
+async def browser_visual_find(session_id: str, description: str) -> str:
+    """Use computer vision to locate a UI element when DOM-based methods fail.
+
+    This is a **last-resort fallback** for elements that are invisible to
+    browser_get_structured_dom (e.g. canvas-rendered UIs, complex shadow DOM,
+    dynamically injected elements without accessible attributes).
+
+    Workflow:
+    1. Captures a screenshot of the current page.
+    2. Sends the image to the local vision-language model (qwen3vl).
+    3. Returns the model's analysis: probable CSS selector, visible text,
+       and approximate position.
+
+    Only call this after browser_get_structured_dom AND browser_screenshot /
+    browser_click_by_mark_id have both failed.
+
+    Args:
+        session_id: Active session ID linked to the user's browser.
+        description: Human-readable description of the element to find,
+            e.g. "the blue Subscribe button" or "search input field".
+    """
+    if err := _validate_session_id(session_id):
+        return err
+
+    if _vl_llm is None:
+        return "Visual fallback unavailable: vision model not initialised."
+
+    # 1. Capture screenshot (raw result contains base64 image)
+    try:
+        raw = await _get_client().invoke(session_id, "screenshot", {})
+    except RuntimeError as e:
+        return f"Visual fallback failed: could not capture screenshot — {e}"
+
+    b64: str = raw.get("screenshot", "")
+    if not b64:
+        return "Visual fallback failed: screenshot returned no image data."
+
+    # Strip data-URI prefix when present ("data:image/jpeg;base64,...")
+    if b64.startswith("data:"):
+        b64 = b64.split(",", 1)[-1]
+
+    # 2. Query vision-language model with the screenshot
+    from langchain_core.messages import HumanMessage as _HumanMessage
+
+    vl_prompt = (
+        f"This is a browser screenshot. Find the UI element described as: "
+        f"'{description}'.\n\n"
+        "Provide ALL of the following that you can determine:\n"
+        "1. Visible text on the element\n"
+        "2. Element type (button, input, link, etc.)\n"
+        "3. A CSS selector (id, class, aria-label, etc.) if identifiable\n"
+        "4. Approximate screen position (e.g. top-left, center, bottom-right)\n\n"
+        "Be concise. If the element is not visible, say so clearly."
+    )
+    vl_message = _HumanMessage(
+        content=[
+            {
+                "type": "image_url",
+                "image_url": {"url": f"data:image/jpeg;base64,{b64}"},
+            },
+            {"type": "text", "text": vl_prompt},
+        ]
+    )
+
+    try:
+        response = await _vl_llm.ainvoke([vl_message])
+        analysis: str = (
+            response.content
+            if isinstance(response.content, str)
+            else str(response.content)
+        )
+    except Exception as e:
+        return f"Visual fallback failed: vision model error — {e}"
+
+    return f"[Visual analysis for '{description}']\n{analysis}"
+
+
 BROWSER_TOOLS = [
     browser_navigate,
     browser_click,
@@ -570,6 +650,7 @@ BROWSER_TOOLS = [
     browser_wait_for_element,
     get_page_info,
     browser_get_structured_dom,
+    browser_visual_find,
 ]
 
 # ---------------------------------------------------------------------------
@@ -600,10 +681,17 @@ Guidelines:
 7. Use browser_wait_for_element to wait for dynamic content before interacting.
 8. Report each action and its result clearly to the user.
 9. If a tool call fails, try once with a different selector before reporting failure.
+10. DOM Failure Fallback (use in order):
+    a. browser_get_structured_dom — always try first.
+    b. browser_screenshot + browser_click_by_mark_id — if DOM lookup fails.
+    c. browser_visual_find(session_id=..., description="...") — LAST RESORT only.
+       Use this when both DOM and mark-based clicks have failed. It sends the
+       screenshot to a vision model to identify elements invisible to the DOM.
 
 Efficiency:
 - browser_get_structured_dom is fast and token-efficient. Use it first.
 - Screenshots consume many tokens. Use sparingly.
+- browser_visual_find is the most expensive call; only use it as a last resort.
 - Always include session_id in every single tool call.
 
 For YouTube tasks:
@@ -958,7 +1046,7 @@ def build_browser_graph(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: connect to Gateway, build LLMs and graph; shutdown: clean up."""
-    global _gateway_client
+    global _gateway_client, _vl_llm
 
     agent_settings = BrowserAgentSettings()
     llm_settings = LLMSettings()
@@ -982,6 +1070,12 @@ async def lifespan(app: FastAPI):
     # Planner/progress-check/replan use lighter model for speed
     planner_llm = create_ollama_llm(agent_settings.planner_model, llm_settings)
 
+    # Vision-language model for DOM-failure fallback (streaming disabled —
+    # the VL model is called directly via ainvoke, not streamed to the user)
+    _vl_llm = create_ollama_llm(
+        agent_settings.vision_model, llm_settings, streaming=False
+    )
+
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
 
@@ -990,9 +1084,10 @@ async def lifespan(app: FastAPI):
         )
 
         logger.info(
-            "Browser Agent ready -- actor=%s, planner=%s, gateway=%s, tools=%d",
+            "Browser Agent ready -- actor=%s, planner=%s, vision=%s, gateway=%s, tools=%d",
             agent_settings.browser_model,
             agent_settings.planner_model,
+            agent_settings.vision_model,
             agent_settings.gateway_url,
             len(BROWSER_TOOLS),
         )
@@ -1001,6 +1096,7 @@ async def lifespan(app: FastAPI):
     if _gateway_client:
         await _gateway_client.close()
     _gateway_client = None
+    _vl_llm = None
 
 
 app = FastAPI(title="Browser Agent", version="0.3.0", lifespan=lifespan)
