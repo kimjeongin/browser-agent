@@ -10,30 +10,23 @@ from unittest.mock import MagicMock
 import pytest
 from httpx import ASGITransport, AsyncClient
 
-import main as gateway_main
 from main import app
+from core.session_store import SessionStore
+from core.invocation_broker import InvocationBroker
+from settings import Settings
 
 
 @pytest.fixture(autouse=True)
-def reset_module_state():
-    """Reset module-level in-memory state before each test."""
-    gateway_main._sessions.clear()
-    gateway_main._session_expires_at.clear()
-    gateway_main._session_queues.clear()
-    gateway_main._pending_invocations.clear()
-    gateway_main._browser_controlling.clear()
-    gateway_main._invocation_to_session.clear()
-    gateway_main._session_sse_subscribers.clear()
-    gateway_main._session_semaphores.clear()
+def reset_app_state():
+    """Reset app.state before each test to prevent cross-test pollution."""
+    # Create fresh instances for each test
+    app.state.session_store = SessionStore(ttl_seconds=86400)
+    app.state.broker = InvocationBroker()
+    app.state.settings = Settings()
     yield
-    gateway_main._sessions.clear()
-    gateway_main._session_expires_at.clear()
-    gateway_main._session_queues.clear()
-    gateway_main._pending_invocations.clear()
-    gateway_main._browser_controlling.clear()
-    gateway_main._invocation_to_session.clear()
-    gateway_main._session_sse_subscribers.clear()
-    gateway_main._session_semaphores.clear()
+    # Cleanup
+    for key in ("session_store", "broker", "settings"):
+        app.state._state.pop(key, None)
 
 
 @pytest.fixture

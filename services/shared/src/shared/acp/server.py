@@ -99,6 +99,16 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
                     data: dict[str, Any] | None = None
 
                     if kind == "on_chat_model_stream":
+                        # Only forward tokens from user-facing nodes.
+                        # Internal control nodes (progress_check, replan) emit
+                        # raw JSON or re-planning text that is not meant for the
+                        # end user — suppress them here.
+                        node_name = event.get("metadata", {}).get(
+                            "langgraph_node", ""
+                        )
+                        if node_name in ("progress_check", "replan"):
+                            continue
+
                         content = event.get("data", {}).get("chunk", "")
                         # LangChain message chunks expose .content
                         text = (

@@ -1,4 +1,4 @@
-"""Tests for P2 Progress Ledger — progress_check_node, replan_node, route_after_progress."""
+"""Tests for P2 Progress Ledger -- progress_check_node, replan_node, route_after_progress."""
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
@@ -16,7 +16,7 @@ def _tool_msg(content: str, tool_call_id: str = "call-001") -> ToolMessage:
 
 def test_route_after_progress_returns_end_when_complete():
     from langgraph.graph import END as GRAPH_END
-    from main import route_after_progress
+    from graph.router import route_after_progress
 
     state = {
         "messages": [],
@@ -32,7 +32,7 @@ def test_route_after_progress_returns_end_when_complete():
 
 
 def test_route_after_progress_returns_actor_when_making_progress():
-    from main import route_after_progress
+    from graph.router import route_after_progress
 
     state = {
         "messages": [],
@@ -48,7 +48,8 @@ def test_route_after_progress_returns_actor_when_making_progress():
 
 
 def test_route_after_progress_returns_replan_when_stall_count_gte_3():
-    from main import MAX_STALL_COUNT, route_after_progress
+    from graph.state import MAX_STALL_COUNT
+    from graph.router import route_after_progress
 
     state = {
         "messages": [],
@@ -64,7 +65,7 @@ def test_route_after_progress_returns_replan_when_stall_count_gte_3():
 
 
 def test_route_after_progress_returns_replan_when_stuck_in_loop():
-    from main import route_after_progress
+    from graph.router import route_after_progress
 
     state = {
         "messages": [],
@@ -86,7 +87,7 @@ def test_route_after_progress_returns_replan_when_stuck_in_loop():
 
 @pytest.mark.asyncio
 async def test_progress_check_node_parses_valid_json_response():
-    from main import progress_check_node
+    from graph.nodes import progress_check_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(
@@ -112,7 +113,7 @@ async def test_progress_check_node_parses_valid_json_response():
 @pytest.mark.asyncio
 async def test_progress_check_node_fallback_on_non_json_response():
     """Non-JSON response should fall back to 'making progress' without crashing."""
-    from main import progress_check_node
+    from graph.nodes import progress_check_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(
@@ -135,7 +136,7 @@ async def test_progress_check_node_fallback_on_non_json_response():
 @pytest.mark.asyncio
 async def test_progress_check_node_strips_markdown_fences():
     """JSON wrapped in ```json code fences should parse correctly."""
-    from main import progress_check_node
+    from graph.nodes import progress_check_node
 
     json_content = (
         "```json\n"
@@ -158,7 +159,7 @@ async def test_progress_check_node_strips_markdown_fences():
 
 @pytest.mark.asyncio
 async def test_progress_check_node_increments_stall_count_when_not_progressing():
-    from main import progress_check_node
+    from graph.nodes import progress_check_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(
@@ -180,7 +181,7 @@ async def test_progress_check_node_increments_stall_count_when_not_progressing()
 
 @pytest.mark.asyncio
 async def test_progress_check_node_resets_stall_count_when_progressing():
-    from main import progress_check_node
+    from graph.nodes import progress_check_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(
@@ -207,7 +208,7 @@ async def test_progress_check_node_resets_stall_count_when_progressing():
 
 @pytest.mark.asyncio
 async def test_replan_node_resets_stall_count_to_zero():
-    from main import replan_node
+    from graph.nodes import replan_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(
@@ -227,7 +228,7 @@ async def test_replan_node_resets_stall_count_to_zero():
 
 @pytest.mark.asyncio
 async def test_replan_node_clears_action_history():
-    from main import replan_node
+    from graph.nodes import replan_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(
@@ -253,7 +254,7 @@ async def test_replan_node_clears_action_history():
 @pytest.mark.asyncio
 async def test_actor_node_appends_tool_call_to_action_history():
     """actor_node should record tool call names in action_history."""
-    from main import actor_node
+    from graph.nodes import actor_node
 
     mock_llm = MagicMock()
     tool_call = {
@@ -283,7 +284,7 @@ async def test_actor_node_appends_tool_call_to_action_history():
 @pytest.mark.asyncio
 async def test_actor_node_includes_progress_hint_in_system_prompt():
     """actor_node should include next_action_hint from progress_ledger in system prompt."""
-    from main import actor_node
+    from graph.nodes import actor_node
 
     mock_llm = MagicMock()
     mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content="Done"))
@@ -313,7 +314,8 @@ async def test_actor_node_includes_progress_hint_in_system_prompt():
 
 def test_build_browser_graph_p2_compiles_with_all_nodes():
     """P2 graph should compile with planner, actor, tools, progress_check, replan."""
-    from main import BROWSER_TOOLS, build_browser_graph
+    from tools.browser_tools import BROWSER_TOOLS
+    from graph.builder import build_browser_graph
 
     mock_llm = MagicMock()
     mock_llm.bind_tools = MagicMock(return_value=mock_llm)

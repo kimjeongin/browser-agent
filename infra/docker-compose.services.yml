@@ -25,7 +25,7 @@ services:
   orchestrator:
     build:
       context: ../services
-      dockerfile: ochestrator/Dockerfile
+      dockerfile: orchestrator/Dockerfile
     container_name: browser-agent-orchestrator
     expose: ["8001"]
     environment:

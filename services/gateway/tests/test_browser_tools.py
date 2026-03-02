@@ -1,8 +1,8 @@
 """Tests for Gateway browser-tools endpoints (webMCP-inspired pattern).
 
 Covered endpoints:
-- POST /sessions/{id}/browser-tools/invoke  (Browser Agent → Gateway, blocking)
-- POST /sessions/{id}/browser-tools/result/{inv_id}  (Extension → Gateway)
+- POST /sessions/{id}/browser-tools/invoke  (Browser Agent -> Gateway, blocking)
+- POST /sessions/{id}/browser-tools/result/{inv_id}  (Extension -> Gateway)
 - GET  /sessions/{id}/browser-status
 """
 
@@ -10,7 +10,6 @@ import asyncio
 
 import pytest
 
-import main as gateway_main
 from main import app
 from shared.models.session import Session
 
@@ -20,21 +19,16 @@ from shared.models.session import Session
 # ---------------------------------------------------------------------------
 
 def _add_session(session_id: str = "sess-001", with_queue: bool = True) -> None:
-    """Insert a session directly into the in-memory store.
-
-    with_queue=True (default) also creates the command queue, simulating that
-    the extension SSE connection is established (mirrors create_session behavior).
-    Pass with_queue=False to test the "no extension connected" error path.
-    """
+    """Insert a session directly into the in-memory store."""
     sess = Session(session_id=session_id, user_id="user-1")
-    gateway_main._set_session(sess)
+    app.state.session_store.set(sess)
     if with_queue:
-        gateway_main._get_or_create_queue(session_id)
+        app.state.broker.get_or_create_queue(session_id)
 
 
 def _simulate_extension_connected(session_id: str) -> None:
     """Simulate an Extension SSE subscriber being connected."""
-    gateway_main._session_sse_subscribers[session_id] = 1
+    app.state.session_store.increment_sse_subscribers(session_id)
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +50,7 @@ async def test_invoke_and_result_roundtrip_success(gateway_client):
 
     async def do_submit_result():
         # Wait for the invocation to be queued
-        queue = gateway_main._get_or_create_queue(session_id)
+        queue = app.state.broker.get_or_create_queue(session_id)
         event = await asyncio.wait_for(queue.get(), timeout=5.0)
         inv_id = event["inv_id"]
 
@@ -97,7 +91,7 @@ async def test_invoke_and_result_roundtrip_tool_error(gateway_client):
         )
 
     async def do_submit_failure():
-        queue = gateway_main._get_or_create_queue(session_id)
+        queue = app.state.broker.get_or_create_queue(session_id)
         event = await asyncio.wait_for(queue.get(), timeout=5.0)
         inv_id = event["inv_id"]
 
@@ -126,7 +120,6 @@ async def test_invoke_and_result_roundtrip_tool_error(gateway_client):
 
 async def test_invoke_returns_404_for_unknown_session(gateway_client):
     """Invoke on an unknown session should return 404."""
-    # Session "no-such-session" is not in _sessions → 404
     response = await gateway_client.post(
         "/sessions/no-such-session/browser-tools/invoke",
         json={"tool_name": "navigate", "params": {"url": "https://example.com"}},
@@ -178,8 +171,8 @@ async def test_submit_result_already_done_future_is_idempotent(gateway_client):
     future: asyncio.Future = loop.create_future()
     future.set_result({"success": True, "result": None})
 
-    # Updated: tuple with timestamp (GW-1 change)
-    gateway_main._pending_invocations[inv_id] = (future, loop.time())
+    # Directly place into broker's _pending dict
+    app.state.broker._pending[inv_id] = (future, loop.time())
 
     response = await gateway_client.post(
         f"/sessions/any-session/browser-tools/result/{inv_id}",
@@ -207,7 +200,7 @@ async def test_browser_status_returns_false_by_default(gateway_client):
 
 
 async def test_browser_status_returns_true_when_controlling(gateway_client):
-    gateway_main._browser_controlling["sess-xyz"] = True
+    app.state.session_store.set_browser_controlling("sess-xyz", True)
 
     response = await gateway_client.get("/sessions/sess-xyz/browser-status")
     assert response.status_code == 200
@@ -234,7 +227,7 @@ async def test_invoke_enqueues_correct_event_shape(gateway_client):
         )
 
     async def capture_and_resolve():
-        queue = gateway_main._get_or_create_queue(session_id)
+        queue = app.state.broker.get_or_create_queue(session_id)
         event = await asyncio.wait_for(queue.get(), timeout=5.0)
 
         # Verify event shape
@@ -258,7 +251,7 @@ async def test_invoke_enqueues_correct_event_shape(gateway_client):
 
 
 async def test_browser_controlling_set_during_invoke(gateway_client):
-    """_browser_controlling should be True while invoke is waiting for result."""
+    """browser_controlling should be True while invoke is waiting for result."""
     session_id = "sess-ctrl-state"
     _add_session(session_id)
     _simulate_extension_connected(session_id)
@@ -272,11 +265,11 @@ async def test_browser_controlling_set_during_invoke(gateway_client):
         )
 
     async def observe_and_resolve():
-        queue = gateway_main._get_or_create_queue(session_id)
+        queue = app.state.broker.get_or_create_queue(session_id)
         event = await asyncio.wait_for(queue.get(), timeout=5.0)
         # While waiting, controlling should be True
         controlling_during_invoke.append(
-            gateway_main._browser_controlling.get(session_id, False)
+            app.state.session_store.is_browser_controlling(session_id)
         )
         inv_id = event["inv_id"]
         await gateway_client.post(
@@ -288,4 +281,4 @@ async def test_browser_controlling_set_during_invoke(gateway_client):
 
     assert controlling_during_invoke == [True]
     # After completion, controlling should be False
-    assert gateway_main._browser_controlling.get(session_id, False) is False
+    assert app.state.session_store.is_browser_controlling(session_id) is False

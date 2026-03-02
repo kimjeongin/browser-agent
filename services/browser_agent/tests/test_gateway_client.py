@@ -11,7 +11,7 @@ import httpx
 import pytest
 import respx
 
-from main import GatewayBrowserToolsClient
+from tools.gateway_client import GatewayBrowserToolsClient
 
 GATEWAY_URL = "http://gateway:8000"
 SESSION_ID = "test-session-abc"

@@ -1,7 +1,7 @@
 """Tests for Orchestrator supervisor graph components.
 
 Covered:
-- _parse_agent_from_response  (JSON parsing with fallback)
+- parse_agent_from_response  (JSON parsing with fallback)
 - _serialize_messages          (LangChain message serialization)
 - route_from_supervisor        (conditional routing)
 - supervisor_node              (LLM classification)
@@ -15,8 +15,8 @@ from unittest.mock import AsyncMock
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 
+from classifier import parse_agent_from_response
 from main import (
-    _parse_agent_from_response,
     _serialize_messages,
     call_browser_agent,
     call_chat_agent,
@@ -26,7 +26,7 @@ from main import (
 
 
 # ---------------------------------------------------------------------------
-# _parse_agent_from_response
+# parse_agent_from_response
 # ---------------------------------------------------------------------------
 
 
@@ -34,32 +34,32 @@ class TestParseAgentFromResponse:
     """Test JSON extraction from LLM classification output."""
 
     def test_valid_json_chat_agent(self):
-        assert _parse_agent_from_response('{"agent": "chat_agent"}') == "chat_agent"
+        assert parse_agent_from_response('{"agent": "chat_agent"}') == "chat_agent"
 
     def test_valid_json_browser_agent(self):
-        assert _parse_agent_from_response('{"agent": "browser_agent"}') == "browser_agent"
+        assert parse_agent_from_response('{"agent": "browser_agent"}') == "browser_agent"
 
     def test_json_embedded_in_text(self):
         text = 'Based on the input, I classify this as {"agent": "browser_agent"} for the user.'
-        assert _parse_agent_from_response(text) == "browser_agent"
+        assert parse_agent_from_response(text) == "browser_agent"
 
     def test_invalid_json_falls_back_to_chat(self):
-        assert _parse_agent_from_response("this is not json at all") == "chat_agent"
+        assert parse_agent_from_response("this is not json at all") == "chat_agent"
 
     def test_invalid_agent_value_falls_back_to_chat(self):
-        assert _parse_agent_from_response('{"agent": "unknown_agent"}') == "chat_agent"
+        assert parse_agent_from_response('{"agent": "unknown_agent"}') == "chat_agent"
 
     def test_malformed_json_falls_back_to_keyword(self):
-        assert _parse_agent_from_response("{broken json") == "chat_agent"
+        assert parse_agent_from_response("{broken json") == "chat_agent"
 
     def test_fallback_keyword_browser_agent(self):
-        assert _parse_agent_from_response("I think browser_agent should handle this") == "browser_agent"
+        assert parse_agent_from_response("I think browser_agent should handle this") == "browser_agent"
 
     def test_empty_string_returns_chat(self):
-        assert _parse_agent_from_response("") == "chat_agent"
+        assert parse_agent_from_response("") == "chat_agent"
 
     def test_json_without_agent_key_returns_chat(self):
-        assert _parse_agent_from_response('{"action": "browse"}') == "chat_agent"
+        assert parse_agent_from_response('{"action": "browse"}') == "chat_agent"
 
 
 # ---------------------------------------------------------------------------
