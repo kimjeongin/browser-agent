@@ -30,7 +30,7 @@ services:
     expose: ["8001"]
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
-      ORCHESTRATOR_MODEL: llama3.1:8b
+      ORCHESTRATOR_MODEL: qwen3:8b
       CHAT_AGENT_URL: http://chat-agent:8002
       BROWSER_AGENT_URL: http://browser-agent:8003
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
@@ -48,7 +48,7 @@ services:
     expose: ["8002"]
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
-      CHAT_MODEL: qwen2.5:7b
+      CHAT_MODEL: qwen3:8b
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
     extra_hosts:
       - "host.docker.internal:host-gateway"
