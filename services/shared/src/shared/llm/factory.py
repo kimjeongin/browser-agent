@@ -18,8 +18,14 @@ def create_ollama_llm(
         ``format="json"`` is intentionally **never** set because it
         conflicts with tool-calling functionality.
 
+        ``think=False`` is set globally to disable extended-thinking mode
+        for qwen3 series models. Thinking mode adds latency and can produce
+        large intermediate tokens that interfere with tool-calling and
+        multi-agent message passing. Non-qwen3 models safely ignore this
+        parameter.
+
     Args:
-        model: Ollama model name (e.g. ``"llama3.1:8b"``).
+        model: Ollama model name (e.g. ``"qwen3:8b"``).
         settings: Shared LLM settings.
         streaming: Whether to enable streaming output. Defaults to ``True``.
 
@@ -32,4 +38,5 @@ def create_ollama_llm(
         temperature=settings.llm_temperature,
         num_ctx=settings.llm_num_ctx,
         streaming=streaming,
+        think=False,
     )

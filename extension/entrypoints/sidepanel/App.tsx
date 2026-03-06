@@ -114,10 +114,24 @@ export default function App() {
       if (!tokenResult.success || !tokenResult.data)
         throw new Error('인증이 필요합니다. 다시 로그인해주세요.');
 
-      const url = `${config.apiBaseUrl}/sessions/${activeSessionId}/chat/stream?content=${encodeURIComponent(content)}`;
-      const res = await fetch(url, {
+      let url = `${config.apiBaseUrl}/sessions/${activeSessionId}/chat/stream?content=${encodeURIComponent(content)}`;
+      let res = await fetch(url, {
         headers: { Authorization: `Bearer ${tokenResult.data as string}` },
       });
+
+      // Session may have expired (e.g. Gateway restart). Ask background to
+      // verify/recreate the session, then retry once.
+      if (res.status === 404) {
+        const recovered = await browser.runtime.sendMessage({ type: 'RECOVER_SESSION' });
+        if (recovered.success && recovered.data?.sessionId) {
+          activeSessionId = recovered.data.sessionId as string;
+          setSession(activeSessionId);
+          url = `${config.apiBaseUrl}/sessions/${activeSessionId}/chat/stream?content=${encodeURIComponent(content)}`;
+          res = await fetch(url, {
+            headers: { Authorization: `Bearer ${tokenResult.data as string}` },
+          });
+        }
+      }
 
       if (!res.ok || !res.body)
         throw new Error(`요청에 실패했습니다 (${res.status})`);
@@ -137,9 +151,7 @@ export default function App() {
           }
         } else if (event.type === 'tool_end' && event.name) {
           completeToolStep(event.name);
-          if (isBrowserTool(event.name)) {
-            setBrowserControlling(false);
-          }
+          // setBrowserControlling은 finally 블록에서만 false로 설정
         }
       }
     } catch (err) {

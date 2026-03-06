@@ -2,6 +2,7 @@
   "realm": "browser-agent",
   "displayName": "Browser Agent",
   "enabled": true,
+  "sslRequired": "none",
   "registrationAllowed": false,
   "loginWithEmailAllowed": true,
   "duplicateEmailsAllowed": false,
@@ -28,9 +29,10 @@
         "https://*/*",
         "http://localhost/*",
         "chrome-extension://*/*",
-        "moz-extension://*/*"
+        "moz-extension://*/*",
+        "https://dfobhjajeiofnnfheejaejfbjncmadjj.chromiumapp.org/*"
       ],
-      "webOrigins": ["*"],
+      "webOrigins": ["*","https://dfobhjajeiofnnfheejaejfbjncmadjj.chromiumapp.org"],
       "defaultClientScopes": [
         "basic",
         "web-origins",

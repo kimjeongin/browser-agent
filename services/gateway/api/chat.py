@@ -18,6 +18,7 @@ from api.deps import (
 from core.session_store import SessionStore
 from models import ChatRequest
 from shared.acp.client import ACPClient
+from shared.models.session import Session
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,10 @@ async def chat(
     """Proxy a single chat turn to the Orchestrator (synchronous ACP run)."""
     session = store.get(session_id)
     if session is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        # Auto-recreate session for authenticated user (e.g. after Gateway restart)
+        session = Session(session_id=session_id, user_id=user["sub"])
+        store.set(session)
+        logger.info("Auto-recreated session %s (user=%s)", session_id, user["sub"])
     verify_session_owner(session, user)
 
     messages: list[dict[str, Any]] = [
@@ -76,7 +80,10 @@ async def chat_stream(
     """Stream orchestrator response tokens to the client via SSE."""
     session = store.get(session_id)
     if session is None:
-        raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        # Auto-recreate session for authenticated user (e.g. after Gateway restart)
+        session = Session(session_id=session_id, user_id=user["sub"])
+        store.set(session)
+        logger.info("Auto-recreated session %s (user=%s)", session_id, user["sub"])
     verify_session_owner(session, user)
 
     acp_input: dict[str, Any] = {

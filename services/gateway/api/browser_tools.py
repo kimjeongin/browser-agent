@@ -89,15 +89,21 @@ async def invoke_browser_tool(
             detail=f"Session {session_id} not found",
         )
 
-    # Check if Extension SSE is connected
+    # Wait for Extension SSE to connect (Chrome SW may have been suspended
+    # during LLM processing and needs a moment to reconnect).
     if store.get_sse_subscribers(session_id) == 0:
-        raise HTTPException(
-            status_code=503,
-            detail=(
-                "Browser extension is not connected for this session. "
-                "Please ensure the extension is active and connected."
-            ),
-        )
+        for _ in range(20):  # up to 10 seconds
+            await asyncio.sleep(0.5)
+            if store.get_sse_subscribers(session_id) > 0:
+                break
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Browser extension is not connected for this session. "
+                    "Please ensure the extension is active and connected."
+                ),
+            )
 
     settings = request.app.state.settings
 

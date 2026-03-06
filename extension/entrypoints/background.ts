@@ -302,6 +302,27 @@ async function handleMessage(
       }
     }
 
+    case 'RECOVER_SESSION': {
+      // Verify current session and recreate if expired (e.g. after Gateway restart)
+      if (!_sessionId || !getAccessToken()) {
+        return { success: false, error: 'Not authenticated' };
+      }
+      try {
+        const exists = await gateway.verifySession(_sessionId);
+        if (!exists) {
+          const newSession = await gateway.createSession();
+          _sessionId = newSession.session_id;
+          await browser.storage.local.set({ sessionId: _sessionId });
+          // Reconnect commands SSE with new session
+          await startCommandsListener();
+          console.log('[Background] Session recovered:', _sessionId);
+        }
+        return { success: true, data: { sessionId: _sessionId } };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+
     case 'FOCUS_AGENT_TAB': {
       const agentTabId = getAgentTabId();
       if (agentTabId !== null) {
@@ -321,6 +342,15 @@ async function handleMessage(
 
 export default defineBackground(() => {
   // ========================================================================
+  // Keepalive alarm: prevents Chrome from suspending the Service Worker
+  // while the commands SSE connection is active.
+  // ========================================================================
+  browser.alarms.create('sw-keepalive', { periodInMinutes: 0.1 });
+  browser.alarms.onAlarm.addListener(() => {
+    // No-op: having an active alarm listener keeps the SW alive
+  });
+
+  // ========================================================================
   // SW Restart Recovery (runs every time SW activates, not just browser start)
   // ========================================================================
   (async () => {
@@ -335,7 +365,25 @@ export default defineBackground(() => {
       if (localStored.sessionId && sessionStored.refreshToken) {
         const ok = await refreshTokens(sessionStored.refreshToken as string);
         if (ok) {
-          _sessionId = localStored.sessionId as string;
+          // Verify the session still exists on the Gateway (e.g. after Gateway restart).
+          // If not, create a fresh session so /chat/stream doesn't return 404.
+          const storedId = localStored.sessionId as string;
+          let validSessionId: string;
+          try {
+            const exists = await gateway.verifySession(storedId);
+            if (exists) {
+              validSessionId = storedId;
+            } else {
+              const newSession = await gateway.createSession();
+              validSessionId = newSession.session_id;
+              await browser.storage.local.set({ sessionId: validSessionId });
+              console.log('[Background] Gateway session expired, created new session:', validSessionId);
+            }
+          } catch {
+            // Gateway unreachable — fall back to stored ID and hope for the best
+            validSessionId = storedId;
+          }
+          _sessionId = validSessionId;
 
           // Restore AI tab ID if available
           const tabStored = await browser.storage.session.get('ai_tab_id');

@@ -14,6 +14,7 @@ export default defineConfig({
       'tabGroups',
       'activeTab',
       'scripting',
+      'alarms',
     ],
     host_permissions: [
       'http://localhost:*/*',

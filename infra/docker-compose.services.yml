@@ -64,7 +64,9 @@ services:
     expose: ["8003"]
     environment:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
-      BROWSER_MODEL: qwen2.5:14b
+      BROWSER_MODEL: qwen3:8b
+      PLANNER_MODEL: qwen3:8b
+      VISION_MODEL: qwen3vl:8b
       GATEWAY_URL: http://gateway:8000
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       BROWSER_TOOL_TIMEOUT: "65"
