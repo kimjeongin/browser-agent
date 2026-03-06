@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any
 
@@ -10,33 +9,12 @@ from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, Tool
 
 from graph.state import AgentState
 from graph.prompts import (
-    PLANNER_SYSTEM_PROMPT,
-    PROGRESS_CHECK_SYSTEM_PROMPT,
     REPLAN_SYSTEM_PROMPT,
     SYSTEM_PROMPT,
 )
 from graph.utils import _compress_messages
 
 logger = logging.getLogger(__name__)
-
-
-async def planner_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
-    """Analyze current state and decide initial strategy."""
-    messages = _compress_messages(state["messages"])
-    session_id = state.get("session_id", "")
-
-    system_content = PLANNER_SYSTEM_PROMPT
-    if session_id:
-        system_content += f"\n\nCurrent session_id: {session_id}"
-
-    # Replace or inject system prompt
-    if not messages or not isinstance(messages[0], SystemMessage):
-        messages = [SystemMessage(content=system_content), *messages]
-    else:
-        messages = [SystemMessage(content=system_content), *messages[1:]]
-
-    response = await llm.ainvoke(messages)
-    return {"messages": [response]}
 
 
 async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any]:
@@ -75,70 +53,48 @@ async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any
     return {"messages": [response], "action_history": action_history}
 
 
-async def progress_check_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
-    """Evaluate if the task is making progress and update the ledger."""
-    messages = state["messages"]
+def progress_check_node(state: AgentState) -> dict[str, Any]:
+    """Heuristic progress check -- no LLM call required.
 
-    # Collect recent tool results for analysis
-    recent_results: list[str] = []
-    for msg in reversed(messages):
-        if isinstance(msg, ToolMessage):
-            recent_results.insert(0, str(msg.content)[:300])
-            if len(recent_results) >= 3:
-                break
-
+    Detects loops (same tool called 3+ times consecutively) and errors
+    in the most recent tool result. Always returns is_task_complete=False;
+    the actor decides task completion by responding without tool calls,
+    which route_after_actor routes to END.
+    """
     action_history = state.get("action_history") or []
     stall_count = state.get("stall_count") or 0
+    messages = state.get("messages") or []
 
-    progress_input = [
-        SystemMessage(content=PROGRESS_CHECK_SYSTEM_PROMPT),
-        HumanMessage(
-            content=(
-                f"Recent tool results:\n{chr(10).join(recent_results)}\n\n"
-                f"Recent actions taken: {', '.join(action_history) or 'none'}"
-            )
-        ),
-    ]
+    # Loop detection: last 3 actions are the same tool
+    is_stuck = (
+        len(action_history) >= 3
+        and len(set(action_history[-3:])) == 1
+    )
 
-    response = await llm.ainvoke(progress_input)
-    raw = response.content.strip() if hasattr(response, "content") else ""
+    # Error detection in the most recent ToolMessage
+    last_tool_content = ""
+    for msg in reversed(messages):
+        if isinstance(msg, ToolMessage):
+            last_tool_content = str(msg.content) if msg.content else ""
+            break
 
-    # Strip markdown fences if present (```json ... ```)
-    if raw.startswith("```"):
-        lines = raw.split("\n")
-        raw = "\n".join(
-            line for line in lines if not line.strip().startswith("```")
-        ).strip()
+    error_patterns = ("error", "failed", "exception", "timeout")
+    has_error = any(p in last_tool_content.lower() for p in error_patterns)
 
-    # Parse JSON; fall back to "making progress" to avoid false stalls
-    try:
-        ledger = json.loads(raw)
-    except (json.JSONDecodeError, ValueError):
-        logger.warning("progress_check_node: failed to parse JSON, using fallback")
-        ledger = {
-            "is_task_complete": False,
-            "is_making_progress": True,
-            "is_stuck_in_loop": False,
-            "next_action_hint": "",
-        }
+    is_making_progress = not is_stuck and not has_error
 
     # Update stall count
-    if ledger.get("is_making_progress", True):
-        new_stall_count = 0
-    else:
-        new_stall_count = stall_count + 1
+    new_stall_count = 0 if is_making_progress else stall_count + 1
 
-    # Append next_action_hint to action_history for context
-    updated_history = list(action_history)
-    hint = ledger.get("next_action_hint", "")
-    if hint:
-        updated_history.append(f"hint:{hint[:50]}")
-    updated_history = updated_history[-5:]
+    ledger = {
+        "is_task_complete": False,
+        "is_making_progress": is_making_progress,
+        "is_stuck_in_loop": is_stuck,
+    }
 
     return {
         "progress_ledger": ledger,
         "stall_count": new_stall_count,
-        "action_history": updated_history,
     }
 
 

@@ -538,31 +538,6 @@ def test_route_after_actor_returns_end_when_no_tool_calls():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_planner_node_injects_planner_system_prompt():
-    """Planner node should use PLANNER_SYSTEM_PROMPT."""
-    from graph.nodes import planner_node
-
-    mock_llm = MagicMock()
-    mock_response = AIMessage(content="Navigate to YouTube.")
-    mock_llm.ainvoke = AsyncMock(return_value=mock_response)
-
-    state = {
-        "messages": [HumanMessage(content="Search YouTube for cats")],
-        "session_id": "sess-001",
-        "stall_count": 0,
-        "progress_ledger": {},
-        "action_history": [],
-    }
-
-    result = await planner_node(state, llm=mock_llm)
-
-    # Verify the LLM was called with planner prompt
-    call_args = mock_llm.ainvoke.call_args[0][0]
-    assert isinstance(call_args[0], SystemMessage)
-    assert "planner" in call_args[0].content.lower()
-    assert len(result["messages"]) == 1
-
 
 @pytest.mark.asyncio
 async def test_actor_node_injects_system_prompt_with_session_id():

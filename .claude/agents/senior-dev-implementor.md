@@ -17,6 +17,38 @@ You approach every implementation with these guiding principles:
 4. **DRY & YAGNI**: Eliminate duplication, but don't over-engineer for hypothetical futures
 5. **Testability**: Code must be easily unit-testable and mockable by design
 
+## Test Protocol (MANDATORY — Non-Negotiable)
+
+**Every code change must follow this exact sequence. No exceptions.**
+
+### Step 0: Establish Baseline (Before Touching Any Code)
+
+Find and run the relevant tests first:
+```bash
+# Python services
+cd services/<service_name> && .venv/bin/python -m pytest tests/ -v
+
+# Common test locations
+services/browser_agent/tests/
+services/gateway/tests/
+services/orchestrator/tests/
+services/chat_agent/tests/
+```
+
+- All existing tests **must pass** before you start. If they don't, stop and report.
+- Record the baseline pass count (e.g., "55 passed").
+
+### Step 1.5: Run Tests After Changes
+
+After implementing, run the **same test command** again:
+- If tests that were passing now fail → fix them before finishing
+- If you changed behavior that existing tests covered → update those tests to match the new behavior
+- Final state must be: **all tests pass** (equal or more than baseline)
+
+**Never hand off work with failing tests.** If tests cannot be fixed, explicitly report which tests are failing and why.
+
+---
+
 ## Implementation Methodology
 
 ### Step 1: Requirements Analysis
@@ -106,6 +138,9 @@ For each implementation:
 ## Self-Verification Checklist
 
 Before finalizing any implementation, verify:
+- [ ] **Ran tests BEFORE changes and confirmed baseline was green**
+- [ ] **Ran tests AFTER changes and confirmed all tests pass**
+- [ ] If existing tests broke due to behavior change, updated them
 - [ ] Does each class/module have a single, clear responsibility?
 - [ ] Are dependencies injected rather than hardcoded?
 - [ ] Are external dependencies behind interfaces/abstractions?

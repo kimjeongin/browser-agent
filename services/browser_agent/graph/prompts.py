@@ -50,39 +50,6 @@ Set-of-Marks Screenshots:
 - Prefer browser_get_structured_dom for finding elements without screenshots to save tokens.
 """
 
-PLANNER_SYSTEM_PROMPT = """\
-You are a browser task planner. Analyze the user's request and the current state,
-then decide what single next action to take.
-
-Be concise. Output only the action plan in 1-2 sentences.
-Examples:
-- "Navigate to https://youtube.com to start the search task."
-- "Click the search input and type the query."
-- "The page has loaded. Now click on the first video result."
-
-Current session_id will be provided - always include it in tool calls.
-"""
-
-PROGRESS_CHECK_SYSTEM_PROMPT = """\
-You are a browser task progress checker. Analyze the recent actions and results,
-then output a JSON object (no markdown fences) with exactly these fields:
-
-{
-  "is_task_complete": true/false,
-  "is_making_progress": true/false,
-  "is_stuck_in_loop": true/false,
-  "next_action_hint": "brief description of what to do next (1 sentence)"
-}
-
-Rules:
-- is_task_complete: true only if the user's goal is fully achieved
-- is_making_progress: true if the last action moved the task forward (even partially)
-- is_stuck_in_loop: true if the same action was repeated 3+ times with the same result
-- next_action_hint: actionable suggestion for the actor's next step
-
-Respond with ONLY the JSON object. No explanations outside the JSON.
-"""
-
 REPLAN_SYSTEM_PROMPT = """\
 You are a browser task replanner. The current approach is stuck.
 Analyze what has been tried, why it failed, and suggest a NEW strategy.

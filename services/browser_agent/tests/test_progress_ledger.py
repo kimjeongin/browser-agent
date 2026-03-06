@@ -85,89 +85,27 @@ def test_route_after_progress_returns_replan_when_stuck_in_loop():
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_progress_check_node_parses_valid_json_response():
+def test_progress_check_node_making_progress_on_success():
+    """No error, no loop → is_making_progress=True, stall_count reset to 0."""
     from graph.nodes import progress_check_node
-
-    mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(
-        return_value=AIMessage(
-            content='{"is_task_complete": false, "is_making_progress": true, '
-                    '"is_stuck_in_loop": false, "next_action_hint": "Click search button"}'
-        )
-    )
 
     state = {
         "messages": [_tool_msg("Navigated to: https://youtube.com")],
-        "stall_count": 0,
+        "stall_count": 2,
         "action_history": ["browser_navigate"],
     }
 
-    result = await progress_check_node(state, llm=mock_llm)
+    result = progress_check_node(state)
 
     assert result["progress_ledger"]["is_making_progress"] is True
-    assert result["progress_ledger"]["next_action_hint"] == "Click search button"
+    assert result["progress_ledger"]["is_task_complete"] is False
+    assert result["progress_ledger"]["is_stuck_in_loop"] is False
     assert result["stall_count"] == 0  # reset because making progress
 
 
-@pytest.mark.asyncio
-async def test_progress_check_node_fallback_on_non_json_response():
-    """Non-JSON response should fall back to 'making progress' without crashing."""
+def test_progress_check_node_detects_error_in_last_tool_message():
+    """Error keyword in last ToolMessage → is_making_progress=False, stall incremented."""
     from graph.nodes import progress_check_node
-
-    mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(
-        return_value=AIMessage(content="The task is still in progress.")
-    )
-
-    state = {
-        "messages": [_tool_msg("some result")],
-        "stall_count": 1,
-        "action_history": [],
-    }
-
-    result = await progress_check_node(state, llm=mock_llm)
-
-    # Fallback: is_making_progress=True avoids false stall
-    assert result["progress_ledger"]["is_making_progress"] is True
-    assert result["stall_count"] == 0  # reset because fallback = making progress
-
-
-@pytest.mark.asyncio
-async def test_progress_check_node_strips_markdown_fences():
-    """JSON wrapped in ```json code fences should parse correctly."""
-    from graph.nodes import progress_check_node
-
-    json_content = (
-        "```json\n"
-        '{"is_task_complete": true, "is_making_progress": true, '
-        '"is_stuck_in_loop": false, "next_action_hint": "done"}\n'
-        "```"
-    )
-    mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(return_value=AIMessage(content=json_content))
-
-    state = {
-        "messages": [_tool_msg("Task finished")],
-        "stall_count": 0,
-        "action_history": [],
-    }
-
-    result = await progress_check_node(state, llm=mock_llm)
-    assert result["progress_ledger"]["is_task_complete"] is True
-
-
-@pytest.mark.asyncio
-async def test_progress_check_node_increments_stall_count_when_not_progressing():
-    from graph.nodes import progress_check_node
-
-    mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(
-        return_value=AIMessage(
-            content='{"is_task_complete": false, "is_making_progress": false, '
-                    '"is_stuck_in_loop": false, "next_action_hint": "try again"}'
-        )
-    )
 
     state = {
         "messages": [_tool_msg("TOOL FAILED [click]: Element not found")],
@@ -175,21 +113,46 @@ async def test_progress_check_node_increments_stall_count_when_not_progressing()
         "action_history": ["browser_click"],
     }
 
-    result = await progress_check_node(state, llm=mock_llm)
+    result = progress_check_node(state)
+
+    assert result["progress_ledger"]["is_making_progress"] is False
     assert result["stall_count"] == 2  # incremented
 
 
-@pytest.mark.asyncio
-async def test_progress_check_node_resets_stall_count_when_progressing():
+def test_progress_check_node_detects_loop_when_same_tool_repeated():
+    """Same tool 3 times in action_history → is_stuck_in_loop=True."""
     from graph.nodes import progress_check_node
 
-    mock_llm = MagicMock()
-    mock_llm.ainvoke = AsyncMock(
-        return_value=AIMessage(
-            content='{"is_task_complete": false, "is_making_progress": true, '
-                    '"is_stuck_in_loop": false, "next_action_hint": "type the query"}'
-        )
-    )
+    state = {
+        "messages": [_tool_msg("Clicked element: #btn")],
+        "stall_count": 0,
+        "action_history": ["browser_click", "browser_click", "browser_click"],
+    }
+
+    result = progress_check_node(state)
+
+    assert result["progress_ledger"]["is_stuck_in_loop"] is True
+    assert result["progress_ledger"]["is_making_progress"] is False
+    assert result["stall_count"] == 1  # incremented
+
+
+def test_progress_check_node_increments_stall_count_on_error():
+    """Error in tool result should increment stall_count."""
+    from graph.nodes import progress_check_node
+
+    state = {
+        "messages": [_tool_msg("timeout: request timed out after 30s")],
+        "stall_count": 1,
+        "action_history": ["browser_navigate"],
+    }
+
+    result = progress_check_node(state)
+    assert result["stall_count"] == 2  # incremented
+
+
+def test_progress_check_node_resets_stall_count_when_progressing():
+    """Successful tool result should reset stall_count to 0."""
+    from graph.nodes import progress_check_node
 
     state = {
         "messages": [_tool_msg("Navigated to: https://youtube.com")],
@@ -197,7 +160,7 @@ async def test_progress_check_node_resets_stall_count_when_progressing():
         "action_history": ["browser_navigate"],
     }
 
-    result = await progress_check_node(state, llm=mock_llm)
+    result = progress_check_node(state)
     assert result["stall_count"] == 0  # reset on progress
 
 
@@ -313,7 +276,7 @@ async def test_actor_node_includes_progress_hint_in_system_prompt():
 
 
 def test_build_browser_graph_p2_compiles_with_all_nodes():
-    """P2 graph should compile with planner, actor, tools, progress_check, replan."""
+    """Graph should compile with actor, tools, progress_check, replan (no planner)."""
     from tools.browser_tools import BROWSER_TOOLS
     from graph.builder import build_browser_graph
 
@@ -330,10 +293,10 @@ def test_build_browser_graph_p2_compiles_with_all_nodes():
     assert graph is not None
     # Verify key nodes are in the compiled graph
     node_names = list(graph.get_graph().nodes.keys())
-    assert "planner" in node_names
     assert "actor" in node_names
     assert "tools" in node_names
     assert "progress_check" in node_names
     assert "replan" in node_names
-    # validator should NOT be present
+    # planner and validator should NOT be present
+    assert "planner" not in node_names
     assert "validator" not in node_names
