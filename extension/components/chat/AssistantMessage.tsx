@@ -11,6 +11,20 @@ function formatTime(ts: number) {
   });
 }
 
+/**
+ * Strip internal browser-agent status JSON blobs from streamed content.
+ *
+ * The progress_check node occasionally leaks its JSON output into the token
+ * stream (e.g. {"is_task_complete": false, ...}). Those blobs are internal
+ * bookkeeping and should never be shown to the user.
+ */
+function sanitizeContent(raw: string): string {
+  return raw
+    .replace(/\{[^{}]*"is_task_complete"[^{}]*\}/gs, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+}
+
 export function AssistantMessage({ message }: { message: Message }) {
   return (
     <div className="flex gap-2.5 mb-1 animate-[slide-up_200ms_cubic-bezier(0.16,1,0.3,1)_both]">
@@ -98,7 +112,7 @@ export function AssistantMessage({ message }: { message: Message }) {
               hr: () => <hr className="border-surface-200 my-3" />,
             }}
           >
-            {message.content}
+            {sanitizeContent(message.content)}
           </ReactMarkdown>
 
           {/* 스트리밍 커서 */}

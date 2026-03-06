@@ -44,6 +44,16 @@ export class GatewayClient {
     return res.json();
   }
 
+  /** Returns false if the session does not exist (404), throws on other errors. */
+  async verifySession(sessionId: string): Promise<boolean> {
+    const res = await fetch(`${this.baseUrl}/sessions/${sessionId}`, {
+      headers: this.headers,
+    });
+    if (res.status === 404) return false;
+    if (!res.ok) throw new Error(`Verify session failed: ${res.status}`);
+    return true;
+  }
+
   async getSessionStatus(sessionId: string): Promise<{
     session_id: string;
     browser_controlling: boolean;

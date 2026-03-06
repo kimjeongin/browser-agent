@@ -42,7 +42,7 @@ class ChatAgentSettings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
     )
-    chat_model: str = "qwen2.5:7b"
+    chat_model: str = "qwen3:8b"
 
     # Inherited LLM settings are loaded by LLMSettings separately.
 

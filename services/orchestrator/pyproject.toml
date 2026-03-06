@@ -1,5 +1,5 @@
 [project]
-name = "ochestrator"
+name = "orchestrator"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
@@ -20,7 +20,7 @@ dependencies = [
 shared = { path = "../shared", editable = true }
 
 [tool.hatch.build.targets.wheel]
-include = ["main.py"]
+include = ["main.py", "classifier.py"]
 
 [dependency-groups]
 dev = [

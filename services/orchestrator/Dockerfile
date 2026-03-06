@@ -11,9 +11,9 @@ RUN pip install --no-cache-dir uv
 
 # Copy shared package first (better layer caching)
 COPY shared/ shared/
-COPY ochestrator/ ochestrator/
+COPY orchestrator/ orchestrator/
 
-WORKDIR /app/ochestrator
+WORKDIR /app/orchestrator
 RUN uv pip install --system -e ../shared -e .
 
 EXPOSE 8001

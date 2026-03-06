@@ -26,6 +26,8 @@ from shared.acp.server import RunRequest, create_acp_router
 from shared.llm.factory import create_ollama_llm
 from shared.llm.settings import LLMSettings
 
+from classifier import CLASSIFICATION_SYSTEM_PROMPT, parse_agent_from_response
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -49,23 +51,6 @@ llm_settings = LLMSettings()
 # ---------------------------------------------------------------------------
 # Supervisor graph state
 # ---------------------------------------------------------------------------
-
-CLASSIFICATION_SYSTEM_PROMPT = """\
-You are a request classifier for a browser extension AI assistant.
-Your job is to decide which agent should handle the user's latest message.
-
-Available agents:
-- "browser_agent": Handles tasks that require interacting with a web browser,
-  such as clicking, typing, navigating to URLs, scrolling, taking screenshots
-  of specific web pages, filling forms, extracting visible page content, or
-  any action that manipulates or reads the DOM of a live web page.
-  Examples: "유튜브에서 아이유 검색해줘", "이 버튼 클릭해줘", "구글에서 검색해줘"
-- "chat_agent": Handles everything else -- general questions, web search
-  queries, summarisation, translation, coding help, math, and conversation.
-
-Respond ONLY with a JSON object. No explanation, no markdown.
-Example: {"agent": "chat_agent"}
-"""
 
 
 class SupervisorState(TypedDict):
@@ -102,27 +87,9 @@ async def supervisor_node(
     response = await llm.ainvoke(classification_messages)
     response_text = response.content if isinstance(response.content, str) else str(response.content)
 
-    agent = _parse_agent_from_response(response_text)
+    agent = parse_agent_from_response(response_text)
     logger.info("Supervisor classified intent as '%s' for: %.80s", agent, last_human_msg)
     return {"next_agent": agent}
-
-
-def _parse_agent_from_response(text: str) -> str:
-    """Extract agent name from the LLM's JSON response, with fallback."""
-    json_match = re.search(r"\{.*?\}", text, re.DOTALL)
-    if json_match:
-        try:
-            parsed = json.loads(json_match.group())
-            agent = parsed.get("agent", "chat_agent")
-            if agent in ("browser_agent", "chat_agent"):
-                return agent
-        except (json.JSONDecodeError, AttributeError):
-            pass
-
-    lower = text.lower()
-    if "browser_agent" in lower:
-        return "browser_agent"
-    return "chat_agent"
 
 
 def _serialize_messages(messages: list[BaseMessage]) -> list[dict[str, str]]:
@@ -374,7 +341,7 @@ async def stream_run(body: RunRequest, request: Request) -> StreamingResponse:
                 if isinstance(response.content, str)
                 else str(response.content)
             )
-            agent = _parse_agent_from_response(response_text)
+            agent = parse_agent_from_response(response_text)
         except Exception:
             logger.exception("Classification failed, defaulting to chat_agent")
 
