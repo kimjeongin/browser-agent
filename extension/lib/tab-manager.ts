@@ -155,15 +155,19 @@ export async function captureAgentTabScreenshot(): Promise<{
     quality: 65,
   });
 
-  // Step 4: Remove marks overlay (fire-and-forget)
-  browser.tabs.sendMessage(tabId, {
-    type: 'EXECUTE_BROWSER_COMMAND',
-    command: {
-      command_id: 'marks-remove-' + Date.now(),
-      action: 'remove_marks_overlay',
-      params: {},
-    },
-  }).catch(() => {});
+  // Step 4: Remove marks overlay (awaited so marks are gone before returning)
+  try {
+    await browser.tabs.sendMessage(tabId, {
+      type: 'EXECUTE_BROWSER_COMMAND',
+      command: {
+        command_id: 'marks-remove-' + Date.now(),
+        action: 'remove_marks_overlay',
+        params: {},
+      },
+    });
+  } catch {
+    // Content script may not be ready (e.g. chrome:// page) -- safe to ignore
+  }
 
   return { screenshot: dataUrl, marks };
 }

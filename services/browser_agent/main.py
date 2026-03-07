@@ -11,7 +11,7 @@ from fastapi import FastAPI
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from settings import BrowserAgentSettings
-from tools.gateway_client import initialize_client, initialize_vl_llm, cleanup
+from tools.gateway_client import initialize_client, cleanup
 from tools.browser_tools import BROWSER_TOOLS
 from graph.builder import build_browser_graph
 from shared.acp import create_acp_router
@@ -37,19 +37,13 @@ async def lifespan(app: FastAPI):
     )
     await gateway_client.start()
 
-    # Main actor LLM (tool calling, higher quality model)
+    # Main actor LLM -- qwen2.5vl supports multimodal input so it can
+    # directly inspect screenshot images returned by the screenshot tool.
     actor_llm = create_ollama_llm(agent_settings.browser_model, llm_settings)
     llm_with_tools = actor_llm.bind_tools(BROWSER_TOOLS)
 
     # Planner/progress-check/replan use lighter model for speed
     planner_llm = create_ollama_llm(agent_settings.planner_model, llm_settings)
-
-    # Vision-language model for DOM-failure fallback (streaming disabled --
-    # the VL model is called directly via ainvoke, not streamed to the user)
-    vl_llm = create_ollama_llm(
-        agent_settings.vision_model, llm_settings, streaming=False
-    )
-    initialize_vl_llm(vl_llm)
 
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
@@ -59,10 +53,9 @@ async def lifespan(app: FastAPI):
         )
 
         logger.info(
-            "Browser Agent ready -- actor=%s, planner=%s, vision=%s, gateway=%s, tools=%d",
+            "Browser Agent ready -- actor=%s, planner=%s, gateway=%s, tools=%d",
             agent_settings.browser_model,
             agent_settings.planner_model,
-            agent_settings.vision_model,
             agent_settings.gateway_url,
             len(BROWSER_TOOLS),
         )

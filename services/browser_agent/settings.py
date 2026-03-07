@@ -11,8 +11,7 @@ class BrowserAgentSettings(BaseSettings):
     database_url: str = (
         "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
     )
-    browser_model: str = "qwen3:14b"
+    browser_model: str = "qwen2.5vl:7b"  # multimodal model for direct screenshot inspection
     planner_model: str = "qwen3:8b"  # lighter model for planning/validation
-    vision_model: str = "qwen3vl:8b"  # vision-language model for DOM fallback
     gateway_url: str = "http://gateway:8000"
     browser_tool_timeout: float = 65.0  # slightly longer than gateway timeout

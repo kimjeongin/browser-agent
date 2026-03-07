@@ -26,12 +26,20 @@ def _compress_messages(messages: list[BaseMessage]) -> list[BaseMessage]:
     for msg in older:
         if isinstance(msg, ToolMessage):
             content = msg.content
-            # Remove base64 image data (screenshots are very token-heavy)
-            if isinstance(content, str) and "data:image" in content:
+            # Remove base64 image data (screenshots are very token-heavy).
+            # Handles both plain string content and multimodal list content
+            # (produced by _enrich_screenshot_messages in nodes.py).
+            if isinstance(content, list):
                 content = (
-                    "[screenshot removed - use browser_get_structured_dom "
+                    "[screenshot removed - use get_structured_dom "
                     "for page structure]"
                 )
+            elif isinstance(content, str) and "data:image" in content:
+                content = (
+                    "[screenshot removed - use get_structured_dom "
+                    "for page structure]"
+                )
+            # Artifact is intentionally dropped here to free memory.
             compressed_older.append(
                 ToolMessage(content=content, tool_call_id=msg.tool_call_id)
             )

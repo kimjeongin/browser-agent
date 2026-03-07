@@ -69,9 +69,8 @@ class GatewayBrowserToolsClient:
         return data.get("result", data)
 
 
-# Module-level singletons (initialised via initialize_client / initialize_vl_llm)
+# Module-level singleton (initialised via initialize_client)
 _gateway_client: GatewayBrowserToolsClient | None = None
-_vl_llm: Any = None  # Vision-language model for DOM-failure fallback
 
 
 def get_client() -> GatewayBrowserToolsClient:
@@ -81,11 +80,6 @@ def get_client() -> GatewayBrowserToolsClient:
     return _gateway_client
 
 
-def get_vl_llm() -> Any:
-    """Return the vision-language model singleton (may be None)."""
-    return _vl_llm
-
-
 def initialize_client(gateway_url: str, timeout: float) -> GatewayBrowserToolsClient:
     """Create and store the module-level singleton client."""
     global _gateway_client
@@ -93,14 +87,7 @@ def initialize_client(gateway_url: str, timeout: float) -> GatewayBrowserToolsCl
     return _gateway_client
 
 
-def initialize_vl_llm(llm: Any) -> None:
-    """Store the vision-language model as a module-level singleton."""
-    global _vl_llm
-    _vl_llm = llm
-
-
 def cleanup() -> None:
-    """Clear module-level singletons (used during shutdown)."""
-    global _gateway_client, _vl_llm
+    """Clear module-level singleton (used during shutdown)."""
+    global _gateway_client
     _gateway_client = None
-    _vl_llm = None

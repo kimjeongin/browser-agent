@@ -19,6 +19,8 @@ const STEP_LABELS: Record<string, { done: string; running: string }> = {
   wait_for_element: { done: '요소 로딩 확인', running: '요소 대기 중...' },
   browser_wait_for_element: { done: '요소 로딩 확인', running: '요소 대기 중...' },
   get_page_info: { done: '페이지 정보 수집 완료', running: '페이지 정보 수집 중...' },
+  get_structured_dom: { done: '페이지 구조 분석 완료', running: '페이지 구조 분석 중...' },
+  browser_get_structured_dom: { done: '페이지 구조 분석 완료', running: '페이지 구조 분석 중...' },
 };
 
 function getStepLabel(name: string, status: ToolStep['status']): string {

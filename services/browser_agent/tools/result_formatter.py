@@ -20,16 +20,16 @@ def _validate_session_id(session_id: str) -> str | None:
 _RECOVERY_HINTS: dict[str, str] = {
     "navigate": "Ensure the URL is valid and starts with http:// or https://.",
     "click": (
-        "Try browser_get_structured_dom to find the correct selector, "
-        "or take a screenshot with marks and use browser_click_by_mark_id."
+        "Try get_structured_dom to find the correct selector, "
+        "or take a screenshot with marks and use click_by_mark_id."
     ),
     "type": (
-        "Verify the input field is visible with browser_get_structured_dom before typing."
+        "Verify the input field is visible with get_structured_dom before typing."
     ),
     "scroll": "Verify the target element or window is scrollable.",
     "screenshot": "Ensure the AI tab is active and a page has loaded.",
     "extract_content": (
-        "Try a more specific selector or use browser_get_structured_dom instead."
+        "Try a more specific selector or use get_structured_dom instead."
     ),
     "wait_for_element": (
         "The element may use dynamic rendering. "
@@ -38,7 +38,7 @@ _RECOVERY_HINTS: dict[str, str] = {
     "get_page_info": "Navigate to a URL first so a page is loaded.",
     "get_structured_dom": (
         "The page may still be loading. "
-        "Try browser_wait_for_element or navigate first."
+        "Try wait_for_element or navigate first."
     ),
     "click_by_mark_id": (
         "Marks expire when the page changes. "
@@ -90,7 +90,7 @@ def _format_aci_result(
         if not text or not text.strip():
             return (
                 "extract_content returned empty: no text found at this selector. "
-                "Try browser_get_structured_dom for page structure."
+                "Try get_structured_dom for page structure."
             )
         preview = text.strip()[:200]
         suffix = "..." if len(text) > 200 else ""
@@ -147,7 +147,7 @@ def _format_aci_result(
             return (
                 f"Screenshot captured with {mark_count} interactive element marks. "
                 f"Elements: {mark_list}{suffix}. "
-                "Use browser_click_by_mark_id(session_id=..., mark_id=N) "
+                "Use click_by_mark_id(session_id=..., mark_id=N) "
                 "to click an element."
             )
         return f"Screenshot captured (no marks). Image data: {len(screenshot)} chars."

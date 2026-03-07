@@ -123,23 +123,27 @@ def create_acp_router(graph_factory: Callable[[Request], Any]) -> APIRouter:
                             data = {"type": "token", "content": text}
 
                     elif kind == "on_chain_end":
-                        # Capture the last AI message produced by any node.
+                        # Capture the last AIMessage produced by any node.
                         # This is the fallback path for orchestrators that call
                         # sub-agents via synchronous HTTP (no token streaming).
+                        # Only AIMessage instances are captured -- ToolMessage
+                        # results must not leak into the final user-facing text.
+                        from langchain_core.messages import AIMessage as _AIMessage
+
                         output = event.get("data", {}).get("output", {})
                         if isinstance(output, dict):
                             msgs = output.get("messages", [])
                             if msgs:
                                 last_msg = msgs[-1]
-                                text = ""
-                                if hasattr(last_msg, "content") and isinstance(
-                                    last_msg.content, str
-                                ):
-                                    text = last_msg.content
-                                elif isinstance(last_msg, dict):
-                                    text = last_msg.get("content", "")
-                                if text:
-                                    last_ai_content = text
+                                # Only use AIMessage content (not ToolMessage)
+                                if isinstance(last_msg, _AIMessage):
+                                    text = (
+                                        last_msg.content
+                                        if isinstance(last_msg.content, str)
+                                        else ""
+                                    )
+                                    if text:
+                                        last_ai_content = text
 
                     elif kind == "on_tool_start":
                         data = {

@@ -17,9 +17,51 @@ from graph.utils import _compress_messages
 logger = logging.getLogger(__name__)
 
 
+def _enrich_screenshot_messages(
+    messages: list,
+) -> list:
+    """Convert screenshot ToolMessage artifacts into multimodal content.
+
+    When the screenshot tool returns a (text, artifact) tuple, LangChain's
+    ToolNode stores the image in ToolMessage.artifact. This function
+    reconstructs those messages with list-type content so that the
+    multimodal LLM (qwen2.5vl) can directly inspect the screenshot image.
+
+    Older/compressed screenshot messages (artifact already stripped by
+    _compress_messages) pass through unchanged.
+    """
+    enriched = []
+    for msg in messages:
+        if (
+            isinstance(msg, ToolMessage)
+            and getattr(msg, "name", None) == "screenshot"
+            and isinstance(getattr(msg, "artifact", None), dict)
+            and (b64 := msg.artifact.get("screenshot"))
+        ):
+            image_url = (
+                b64
+                if b64.startswith("data:")
+                else f"data:image/jpeg;base64,{b64}"
+            )
+            enriched.append(
+                ToolMessage(
+                    content=[
+                        {"type": "image_url", "image_url": {"url": image_url}},
+                        {"type": "text", "text": str(msg.content)},
+                    ],
+                    tool_call_id=msg.tool_call_id,
+                    name=msg.name,
+                )
+            )
+        else:
+            enriched.append(msg)
+    return enriched
+
+
 async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any]:
     """Execute the next browser action using tools."""
     messages = _compress_messages(state["messages"])
+    messages = _enrich_screenshot_messages(messages)
     session_id = state.get("session_id", "")
     progress_ledger = state.get("progress_ledger") or {}
 
