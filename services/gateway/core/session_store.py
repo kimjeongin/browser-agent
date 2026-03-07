@@ -37,6 +37,9 @@ class SessionStore:
     def _evict(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)
         self._expires_at.pop(session_id, None)
+        self._semaphores.pop(session_id, None)
+        self._sse_subscribers.pop(session_id, None)
+        self._browser_controlling.pop(session_id, None)
 
     def delete(self, session_id: str) -> None:
         self._sessions.pop(session_id, None)

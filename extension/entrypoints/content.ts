@@ -141,7 +141,6 @@ async function executeCommand(command: BrowserCommand): Promise<CommandResult> {
           throw new Error(`Element not found: ${params.selector}`);
         result = {
           text: (container as HTMLElement).innerText,
-          ...(params.include_html ? { html: container.innerHTML } : {}),
         };
         break;
       }
@@ -365,10 +364,13 @@ function waitForElement(
 
 function isVisible(el: Element): boolean {
   const rect = el.getBoundingClientRect();
+  const style = getComputedStyle(el);
   return (
     rect.width > 0 &&
     rect.height > 0 &&
-    getComputedStyle(el).visibility !== 'hidden'
+    style.visibility !== 'hidden' &&
+    style.display !== 'none' &&
+    parseFloat(style.opacity) > 0
   );
 }
 
