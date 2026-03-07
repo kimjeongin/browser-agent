@@ -13,8 +13,8 @@ LangGraph ReAct 에이전트. 웹 검색과 웹페이지 조회 도구를 사용
 
 | 도구 | 시그니처 | 설명 |
 |------|---------|------|
-| `web_search` | `(query: str, max_results: int = 5)` | DuckDuckGo Lite HTML 파싱으로 검색. `title`, `url`, `snippet` 목록 반환. |
-| `fetch_webpage` | `(url: str, max_chars: int = 8000)` | URL 페이지를 fetch해 HTML 태그 제거 후 텍스트 반환. `url`, `title`, `content` dict 반환. |
+| `web_search` | `(query: str, max_results: int = 5)` | DuckDuckGo Lite HTML 파싱으로 검색. `title`, `url`, `snippet` 목록 반환 |
+| `fetch_webpage` | `(url: str, max_chars: int = 8000)` | URL 페이지를 fetch해 HTML 태그 제거 후 텍스트 반환. `url`, `title`, `content` dict 반환 |
 
 ### 검색 구현 방식
 
@@ -68,21 +68,21 @@ agent ──(tools_condition: tool call 있음)──▶ tools ──▶ agent
 
 ### `GET /health`
 
-- **응답**: `{"status": "ok"}`
+**응답**: `{"status": "ok"}`
 
 ## 의존 서비스
 
 | 서비스 | 용도 |
 |--------|------|
 | PostgreSQL `:5432` | LangGraph `AsyncPostgresSaver` 대화 체크포인트 저장 |
-| Ollama `:11434` | 대화 LLM (`qwen2.5:7b`), Docker 내부에서 `host.docker.internal:11434` 접근 |
+| Ollama `:11434` | 대화 LLM (`qwen3:8b`). Docker 내부에서 `host.docker.internal:11434` 접근 |
 
 ## 환경변수
 
 | 변수 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `DATABASE_URL` | string | `postgresql+asyncpg://postgres:password@postgres:5432/browser_agent` | PostgreSQL DSN (내부에서 `postgresql://`로 변환해 psycopg에 전달) |
-| `CHAT_MODEL` | string | `qwen2.5:7b` | Ollama 모델 이름 |
+| `CHAT_MODEL` | string | `qwen3:8b` | Ollama 모델 이름 |
 | `OLLAMA_BASE_URL` | string | `http://host.docker.internal:11434` | Ollama 서버 URL |
 | `LLM_TEMPERATURE` | float | `0.0` | LLM 온도 |
 | `LLM_NUM_CTX` | int | `8192` | 컨텍스트 윈도우 크기 |
@@ -98,6 +98,7 @@ uvicorn main:app --host 0.0.0.0 --port 8002 --reload
 Docker로 실행:
 
 ```bash
+cd infra
 docker compose -f docker-compose.services.yml up --build chat-agent
 ```
 
@@ -114,5 +115,8 @@ docker compose -f docker-compose.services.yml up --build chat-agent
 services/chat_agent/
 ├── main.py          # FastAPI 애플리케이션, 도구 정의, LangGraph 그래프, ACP 라우터
 ├── pyproject.toml   # 패키지 메타데이터 및 의존성
+├── tests/
+│   ├── conftest.py  # 공통 픽스처
+│   └── test_tools.py # web_search, fetch_webpage 도구 테스트
 └── Dockerfile       # python:3.13-slim + libpq-dev, 포트 8002
 ```

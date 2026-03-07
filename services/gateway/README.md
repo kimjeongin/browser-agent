@@ -106,7 +106,7 @@ Extension background service worker가 연결을 유지하는 SSE 채널. Browse
 | 필드 | 타입 | 설명 |
 |------|------|------|
 | `inv_id` | string | 호출 식별자 (UUID) |
-| `tool_name` | string | `navigate` \| `click` \| `type` \| `scroll` \| `screenshot` \| `extract_content` \| `wait_for_element` \| `evaluate_js` \| `get_page_info` |
+| `tool_name` | string | `navigate` \| `click` \| `type` \| `scroll` \| `screenshot` \| `click_by_mark_id` \| `extract_content` \| `wait_for_element` \| `get_page_info` \| `get_structured_dom` |
 | `params` | object | tool_name별 파라미터 |
 
 ### `POST /sessions/{session_id}/browser-tools/invoke`
@@ -143,17 +143,16 @@ Extension이 DOM 액션 결과를 제출하는 엔드포인트. `inv_id`에 해�
 
 ### `GET /health`
 
-- **응답**: `{"status": "ok", "service": "gateway"}`
+**응답**: `{"status": "ok", "service": "gateway", "active_sessions": <int>}`
 
 ## 인메모리 상태
 
 단일 인스턴스에서 asyncio 기반으로 관리된다. 수평 확장 시 Redis Streams로 교체 필요.
 
-| 변수 | 타입 | 설명 |
-|------|------|------|
-| `_session_queues` | `dict[str, asyncio.Queue]` | 세션별 도구 호출 큐 |
-| `_pending_invocations` | `dict[str, asyncio.Future]` | 호출 ID별 대기 중인 Future |
-| `_browser_controlling` | `dict[str, bool]` | 세션별 브라우저 제어 활성 여부 |
+| 클래스 | 역할 |
+|--------|------|
+| `SessionStore` | 세션 dict + TTL lazy expiry. SSE 구독자 수, 브라우저 제어 상태 추적 |
+| `InvocationBroker` | `asyncio.Queue` (세션별 도구 호출 큐) + `asyncio.Future` (inv_id별 결과 대기). 120초 경과 stale invocation 주기적 정리 |
 
 ## 의존 서비스
 
@@ -168,10 +167,14 @@ Extension이 DOM 액션 결과를 제출하는 엔드포인트. `inv_id`에 해�
 |------|------|--------|------|
 | `DATABASE_URL` | string | `postgresql+asyncpg://postgres:password@postgres:5432/browser_agent` | PostgreSQL DSN (현재 미사용, 향후 확장용) |
 | `ORCHESTRATOR_URL` | string | `http://orchestrator:8001` | Orchestrator 서비스 URL |
-| `KEYCLOAK_REALM_URL` | string | `http://keycloak:8080/realms/browser-agent` | Keycloak Realm URL |
+| `KEYCLOAK_REALM_URL` | string | `http://localhost:8080/realms/browser-agent` | Keycloak Realm URL (`iss` claim 검증에 사용) |
+| `KEYCLOAK_JWKS_URL` | string | `""` | JWKS fetch URL. 비어있으면 `{KEYCLOAK_REALM_URL}/protocol/openid-connect/certs`로 자동 구성 |
 | `KEYCLOAK_AUDIENCE` | string | `browser-agent-extension` | JWT `aud` claim 검증 값 |
 | `SESSION_TTL` | int | `86400` | 세션 인메모리 TTL (초), 기본 24시간 |
 | `BROWSER_TOOL_TIMEOUT` | float | `60.0` | 브라우저 도구 응답 대기 최대 시간 (초) |
+| `CORS_ORIGINS` | string | `""` | 허용 Origin 목록 (쉼표 구분). 비어있으면 `*` |
+| `CHROME_EXTENSION_ID` | string | `""` | 지정 시 `chrome-extension://{id}`를 CORS 허용 Origin에 추가 |
+| `ENVIRONMENT` | string | `"production"` | `"development"` 설정 시 `localhost:3000`, `localhost:5173`을 CORS에 추가 |
 
 ## 로컬 실행
 
@@ -193,18 +196,29 @@ docker compose -f docker-compose.services.yml up --build gateway
 - JWT 검증은 `app.state.verifier` (`KeycloakJWTVerifier`)에 위임한다. Gateway 자체에서 검증 로직을 구현하지 않는다.
 - `DELETE /sessions/{id}`는 인메모리 레코드를 즉시 삭제하지 않고 `status`를 `"inactive"`로 변경한다. TTL은 `SESSION_TTL`로 재설정된다.
 - SSE 킵얼라이브: `asyncio.wait_for(queue.get(), timeout=15.0)`이 15초 대기 후 데이터 없으면 `comment: keepalive`를 전송한다.
-- `GET /sessions/{id}/commands`는 인증 없이 접근 가능하다. Extension background script가 JWT를 매 요청마다 안전하게 전달하기 어렵기 때문이다.
-- asyncio.Queue + asyncio.Future 패턴은 단일 Gateway 프로세스 내에서만 동작한다. 수평 확장이 필요하면 Redis Streams로 교체해야 한다.
+- `GET /sessions/{id}/commands`는 인증 없이 접근 가능하다. Extension background script가 JWT를 매 SSE 연결 요청마다 안전하게 전달하기 어렵기 때문이다.
+- `asyncio.Queue + asyncio.Future` 패턴은 단일 Gateway 프로세스 내에서만 동작한다. 수평 확장이 필요하면 Redis Streams로 교체해야 한다.
+- stale invocation 정리 주기: 120초 이상 결과가 오지 않은 invocation을 60초마다 취소한다.
 
 ## 파일 구조
 
 ```
 services/gateway/
-├── main.py          # FastAPI 애플리케이션 (전체 로직)
-├── pyproject.toml   # 패키지 메타데이터 및 의존성
+├── main.py              # FastAPI 애플리케이션, CORS 설정, 라우터 등록
+├── settings.py          # pydantic-settings 기반 환경변수
+├── models.py            # API 요청/응답 Pydantic 모델
+├── api/
+│   ├── sessions.py      # POST/GET/DELETE /sessions
+│   ├── chat.py          # POST /chat, GET /chat/stream
+│   ├── browser_tools.py # GET /commands, POST /invoke, POST /result
+│   └── deps.py          # FastAPI 의존성 (세션 검증 등)
+├── core/
+│   ├── session_store.py     # SessionStore (인메모리 TTL 스토어)
+│   └── invocation_broker.py # InvocationBroker (asyncio.Queue + Future)
 ├── tests/
 │   ├── conftest.py          # 공통 픽스처
 │   ├── test_health.py       # 헬스체크 테스트
-│   └── test_browser_tools.py # 브라우저 도구 round-trip 테스트
-└── Dockerfile       # python:3.13-slim, 포트 8000
+│   ├── test_browser_tools.py # 브라우저 도구 round-trip 테스트
+│   └── test_cleanup.py      # stale invocation 정리 테스트
+└── Dockerfile           # python:3.13-slim, 포트 8000
 ```
