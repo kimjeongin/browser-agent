@@ -64,6 +64,17 @@ class SupervisorState(TypedDict):
 # ---------------------------------------------------------------------------
 
 
+async def _classify_intent(llm: BaseChatModel, user_message: str) -> str:
+    """Classify a user message and return the target agent name."""
+    msgs: list[BaseMessage] = [
+        SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
+        HumanMessage(content=user_message),
+    ]
+    response = await llm.ainvoke(msgs)
+    response_text = response.content if isinstance(response.content, str) else str(response.content)
+    return parse_agent_from_response(response_text)
+
+
 async def supervisor_node(
     state: SupervisorState,
     *,
@@ -79,15 +90,7 @@ async def supervisor_node(
     if not last_human_msg:
         return {"next_agent": "chat_agent"}
 
-    classification_messages = [
-        SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
-        HumanMessage(content=last_human_msg),
-    ]
-
-    response = await llm.ainvoke(classification_messages)
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
-
-    agent = parse_agent_from_response(response_text)
+    agent = await _classify_intent(llm, last_human_msg)
     logger.info("Supervisor classified intent as '%s' for: %.80s", agent, last_human_msg)
     return {"next_agent": agent}
 
@@ -253,6 +256,8 @@ async def lifespan(app: FastAPI):
 
         chat_client = ACPClient(settings.chat_agent_url)
         browser_client = ACPClient(settings.browser_agent_url)
+        await chat_client.start()
+        await browser_client.start()
 
         app.state.graph = build_supervisor_graph(
             llm=llm,
@@ -271,6 +276,9 @@ async def lifespan(app: FastAPI):
             settings.browser_agent_url,
         )
         yield
+
+    await chat_client.close()
+    await browser_client.close()
 
 
 app = FastAPI(
@@ -331,17 +339,7 @@ async def stream_run(body: RunRequest, request: Request) -> StreamingResponse:
     agent = "chat_agent"
     if last_human:
         try:
-            classification_msgs = [
-                SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
-                HumanMessage(content=last_human),
-            ]
-            response = await _llm.ainvoke(classification_msgs)
-            response_text = (
-                response.content
-                if isinstance(response.content, str)
-                else str(response.content)
-            )
-            agent = parse_agent_from_response(response_text)
+            agent = await _classify_intent(_llm, last_human)
         except Exception:
             logger.exception("Classification failed, defaulting to chat_agent")
 

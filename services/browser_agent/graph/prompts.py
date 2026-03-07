@@ -26,13 +26,13 @@ Guidelines:
 7. Use wait_for_element to wait for dynamic content before interacting.
 8. Report each action and its result clearly to the user.
 9. If a tool call fails, try once with a different selector before reporting failure.
-11. MANDATORY FINAL RESPONSE: After completing all browser tasks (when you decide not
+10. MANDATORY FINAL RESPONSE: After completing all browser tasks (when you decide not
     to call any more tools), you MUST write a clear summary of what was accomplished.
     Never end with an empty response. Example final responses:
     - "YouTube에서 [영상제목] 검색 후 첫 번째 결과를 클릭했습니다."
     - "https://example.com으로 이동 완료했습니다."
     - "검색창에 '[검색어]'를 입력하고 엔터를 눌렀습니다."
-10. DOM Failure Fallback (use in order):
+11. DOM Failure Fallback (use in order):
     a. get_structured_dom -- always try first.
     b. screenshot -- if DOM lookup fails. You will see the actual page image and
        can use click_by_mark_id(session_id=..., mark_id=N) to click marked elements.
