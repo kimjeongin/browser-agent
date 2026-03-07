@@ -6,7 +6,7 @@ import { useChatStore } from '../../../stores/chat';
  * service worker and update the chat store accordingly.
  */
 export function useBrowserControl() {
-  const { setBrowserControlling, setAgentTab, clearToolSteps } = useChatStore();
+  const { setBrowserControlling, setAgentTab } = useChatStore();
 
   useEffect(() => {
     const listener = (message: {
@@ -20,13 +20,14 @@ export function useBrowserControl() {
         if (message.tabInfo) {
           setAgentTab(message.tabInfo.tabId, message.tabInfo.tabGroupId);
         }
-        if (!message.controlling) {
-          setTimeout(clearToolSteps, 2500);
-        }
+        // clearToolSteps is NOT called here because BROWSER_CONTROL_STATUS fires
+        // after every individual tool invocation. Clearing steps here would reset
+        // the list between tools. Instead, App.tsx clears steps once after the
+        // entire SSE stream completes.
       }
     };
 
     browser.runtime.onMessage.addListener(listener);
     return () => browser.runtime.onMessage.removeListener(listener);
-  }, [setBrowserControlling, setAgentTab, clearToolSteps]);
+  }, [setBrowserControlling, setAgentTab]);
 }

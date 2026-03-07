@@ -162,6 +162,11 @@ export default function App() {
       setLoading(false);
       setShowSkeleton(false);
       setBrowserControlling(false);
+      // Clear tool steps 2.5s after the entire request finishes (not per-tool).
+      // Background sends BROWSER_CONTROL_STATUS: false after each individual tool,
+      // so we must not clear there -- doing it here ensures all steps remain
+      // visible throughout the full task and disappear once the response arrives.
+      setTimeout(clearToolSteps, 2500);
     }
   }, [
     input,
