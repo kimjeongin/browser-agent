@@ -18,8 +18,6 @@
 | `shared.llm` | `factory.py`, `settings.py` | ChatOllama 팩토리, LLM 공통 설정 |
 | `shared.models` | `session.py` | `Session` Pydantic 모델 |
 
-> **참고**: `shared.redis` 모듈은 제거되었다. Gateway 세션 저장소가 Redis에서 인메모리 dict로 전환되면서 더 이상 필요하지 않다.
-
 ---
 
 ### `shared.auth`
@@ -103,7 +101,7 @@ result = await client.run(thread_id="abc", input={"messages": [...]})
 from shared.llm.factory import create_ollama_llm
 from shared.llm.settings import LLMSettings
 
-llm = create_ollama_llm(model="qwen2.5:7b", settings=LLMSettings())
+llm = create_ollama_llm(model="qwen3:8b", settings=LLMSettings())
 llm_with_tools = llm.bind_tools(tools)
 ```
 
@@ -112,9 +110,10 @@ llm_with_tools = llm.bind_tools(tools)
 | 변수 | 타입 | 기본값 | 설명 |
 |------|------|--------|------|
 | `OLLAMA_BASE_URL` | string | `http://host.docker.internal:11434` | Ollama 서버 URL |
-| `ORCHESTRATOR_MODEL` | string | `llama3.1:8b` | Orchestrator 의도 분류 모델 |
-| `BROWSER_AGENT_MODEL` | string | `qwen2.5:14b` | Browser Agent 모델 |
-| `CHAT_AGENT_MODEL` | string | `qwen2.5:7b` | Chat Agent 모델 |
+| `ORCHESTRATOR_MODEL` | string | `qwen3:8b` | Orchestrator 의도 분류 모델 |
+| `BROWSER_AGENT_MODEL` | string | `qwen3:14b` | Browser Agent 기본 모델 |
+| `CHAT_AGENT_MODEL` | string | `qwen3:8b` | Chat Agent 모델 |
+| `VISION_MODEL` | string | `qwen3vl:8b` | 비전 모델 (멀티모달) |
 | `LLM_TEMPERATURE` | float | `0.0` | LLM 온도 |
 | `LLM_NUM_CTX` | int | `8192` | 컨텍스트 윈도우 크기 |
 
@@ -166,7 +165,7 @@ services/shared/
         ├── acp/
         │   ├── __init__.py
         │   ├── client.py      # ACPClient
-        │   └── server.py      # create_acp_router
+        │   └── server.py      # create_acp_router, RunRequest
         ├── auth/
         │   ├── __init__.py
         │   ├── dependencies.py  # get_current_user FastAPI 의존성

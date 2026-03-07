@@ -8,11 +8,12 @@ can answer questions that require up-to-date information.
 from __future__ import annotations
 
 import html
+import ipaddress
 import logging
 import re
 from contextlib import asynccontextmanager
 from typing import Annotated, Any
-from urllib.parse import quote_plus
+from urllib.parse import quote_plus, urlparse
 
 import httpx
 from fastapi import FastAPI
@@ -52,6 +53,32 @@ class ChatAgentSettings(BaseSettings):
 # ---------------------------------------------------------------------------
 
 _HTTP_TIMEOUT = httpx.Timeout(15.0, connect=10.0)
+_ALLOWED_SCHEMES = {"http", "https"}
+_BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
+
+
+def _is_safe_url(url: str) -> bool:
+    """Return True only if *url* is safe to fetch (not an internal address)."""
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        return False
+    if parsed.scheme not in _ALLOWED_SCHEMES:
+        return False
+    host = parsed.hostname or ""
+    if not host:
+        return False
+    if host.lower() in _BLOCKED_HOSTS:
+        return False
+    try:
+        addr = ipaddress.ip_address(host)
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_reserved:
+            return False
+    except ValueError:
+        pass  # hostname, not an IP literal -- allow
+    return True
+
+
 _SEARCH_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -136,6 +163,9 @@ async def fetch_webpage(url: str, max_chars: int = 8000) -> dict[str, str]:
     Returns:
         A dict with ``url``, ``title``, and ``content`` keys.
     """
+    if not _is_safe_url(url):
+        return {"url": url, "title": "", "content": "Error: URL is not allowed (internal or invalid address)."}
+
     async with httpx.AsyncClient(
         timeout=_HTTP_TIMEOUT, headers=_SEARCH_HEADERS, follow_redirects=True,
     ) as client:

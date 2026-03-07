@@ -7,7 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Any
 
 import httpx
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
 from settings import BrowserAgentSettings
@@ -30,6 +30,8 @@ async def lifespan(app: FastAPI):
     db_url = agent_settings.database_url.replace(
         "postgresql+asyncpg://", "postgresql://"
     )
+
+    app.state.settings = agent_settings
 
     # Initialise Gateway client (singleton, reused across requests)
     gateway_client = initialize_client(
@@ -69,9 +71,9 @@ app = FastAPI(title="Browser Agent", version="0.3.0", lifespan=lifespan)
 
 
 @app.get("/health")
-async def health() -> dict[str, Any]:
+async def health(request: Request) -> dict[str, Any]:
     gateway_ok = False
-    gw_url = BrowserAgentSettings().gateway_url
+    gw_url = request.app.state.settings.gateway_url
     try:
         async with httpx.AsyncClient(timeout=5.0) as c:
             resp = await c.get(f"{gw_url.rstrip('/')}/health")

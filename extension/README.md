@@ -7,9 +7,9 @@ AI 채팅 UI와 브라우저 자동화를 제공하는 Chrome Manifest V3 브라
 - Keycloak PKCE 플로우로 사용자를 인증하고 토큰을 관리한다.
 - 사이드패널 채팅 UI를 통해 Gateway SSE 스트림으로 AI 응답을 수신한다.
 - `GET /sessions/{id}/commands` SSE 채널을 유지하며 브라우저 도구 호출(tool invocation)을 수신한다.
-- 수신한 tool invocation을 content script에 전달해 실제 DOM 액션을 실행한다.
+- 수신한 tool invocation 중 `navigate`, `screenshot`은 background에서 직접 처리하고, 나머지는 content script에 전달해 DOM 액션을 실행한다.
 - DOM 액션 결과를 `POST /sessions/{id}/browser-tools/result/{inv_id}`로 Gateway에 전송한다.
-- Chrome Tab Groups API로 AI 제어 탭을 "AI Assistant" 그룹으로 격리해 시각적으로 표시한다.
+- Chrome Tab Groups API로 AI 제어 탭을 "AI Assistant" 그룹(파란색)으로 격리해 시각적으로 표시한다.
 - 브라우저 제어 중일 때 사이드패널에 배너와 실행 중인 도구 단계를 표시한다.
 
 ## 기술 스택
@@ -21,12 +21,13 @@ AI 채팅 UI와 브라우저 자동화를 제공하는 Chrome Manifest V3 브라
 | TypeScript | 5.9 |
 | Tailwind CSS | 4.x (CSS-first, `@theme` 기반) |
 | Zustand | 5 |
+| shadcn/ui | — |
 
 ## 진입점
 
 | 파일 | 역할 |
 |------|------|
-| `background.ts` | Service Worker. PKCE 로그인, 토큰 관리, commands SSE 수신, 탭 그룹 관리, DOM 액션 실행 |
+| `background.ts` | Service Worker. PKCE 로그인, 토큰 관리, commands SSE 수신, navigate/screenshot 직접 처리, 탭 그룹 관리 |
 | `content.ts` | `<all_urls>` 매칭. click/type/scroll/evaluate_js 등 DOM 액션 실행 |
 | `sidepanel/App.tsx` | 채팅 UI. 로그인 화면, 메시지 목록, SSE 스트리밍 입력, 브라우저 제어 상태 배너 |
 | `popup/App.tsx` | 사이드패널 열기 버튼 |
@@ -49,7 +50,7 @@ Service Worker는 `EventSource` API를 지원하지 않는다. `GatewayClient`�
 
 ```typescript
 const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-const reader = res.body.getReader();
+const reader = res.body!.getReader();
 // 줄 단위로 파싱하며 'data: ' 접두사 이벤트만 처리
 ```
 
@@ -58,7 +59,7 @@ const reader = res.body.getReader();
 1. `background.ts`가 `GET /sessions/{id}/commands` SSE 채널을 구독한다 (`GatewayClient.connectCommandsSSE`).
 2. 도구 호출 이벤트 수신 시 (`{ inv_id, tool_name, params }`):
    - `navigate`, `screenshot`은 background에서 직접 처리
-   - 나머지(`click`, `type`, `scroll` 등)는 `browser.tabs.sendMessage()`로 AI 제어 탭의 `content.ts`에 `EXECUTE_BROWSER_COMMAND` 메시지 전달
+   - 나머지(`click`, `type`, `scroll`, `evaluate_js` 등)는 `browser.tabs.sendMessage()`로 AI 제어 탭의 `content.ts`에 `EXECUTE_BROWSER_COMMAND` 메시지 전달
 3. `content.ts`가 DOM 액션을 실행하고 결과를 반환한다.
 4. `background.ts`가 `GatewayClient.postToolResult()`로 `POST /sessions/{id}/browser-tools/result/{inv_id}`에 결과를 전송한다.
 
@@ -66,7 +67,7 @@ const reader = res.body.getReader();
 
 AI 제어 탭은 "AI Assistant" (파란색) 탭 그룹에 배치된다:
 
-- 로그인 후 commands SSE 연결 시 AI 전용 탭 생성
+- 로그인 후 commands SSE 연결 시 AI 전용 탭 생성 (없으면 신규, 있으면 재사용)
 - 브라우저 제어 시작 시 해당 탭이 포커스됨
 - 사이드패널 "탭 보기" 버튼으로 AI 탭으로 이동 가능
 
@@ -97,6 +98,7 @@ pnpm dev        # 개발 서버 (HMR, Chrome)
 pnpm build      # 프로덕션 빌드
 pnpm compile    # TypeScript 타입 체크 (noEmit)
 pnpm test       # Vitest 테스트 실행
+pnpm test:watch # Vitest 감시 모드
 ```
 
 빌드 결과물은 `extension/.output/chrome-mv3`에 생성된다. `chrome://extensions` → 개발자 모드 → 이 폴더를 로드해 설치한다.
@@ -126,10 +128,11 @@ extension/
 │   ├── config.ts            # 런타임 환경변수 설정
 │   └── messaging.ts         # 타입 안전 메시지 패싱 헬퍼
 ├── stores/
-│   └── chat.ts              # Zustand 채팅 + 브라우저 제어 상태
-├── src/__tests__/
-│   └── browser-tools.test.ts # SSE 파싱, URL 구성, 메시지 포맷 테스트
+│   └── chat.ts              # Zustand 채팅 + 브라우저 제어 상태 (isBrowserControlling, toolSteps, agentTabId)
+├── components/              # 공유 UI 컴포넌트 (shadcn/ui 기반)
 ├── assets/
 │   └── tailwind.css         # Tailwind v4 CSS-first import
+├── __tests__/
+│   └── browser-tools.test.ts # SSE 파싱, URL 구성, 메시지 포맷 테스트
 └── wxt.config.ts            # WXT + Vite + @tailwindcss/vite 설정
 ```

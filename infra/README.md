@@ -17,9 +17,11 @@
 | 서비스 | 포트 | 역할 |
 |--------|------|------|
 | `gateway` | 8000 | API 진입점, SSE 허브, JWT 검증, 브라우저 도구 브로커 |
-| `orchestrator` | 8001 | 의도 분류, 에이전트 라우팅 |
-| `chat-agent` | 8002 | 웹 검색, 일반 대화 |
-| `browser-agent` | 8003 | DOM 제어 에이전트 |
+| `orchestrator` | 8001 (내부 전용) | 의도 분류, 에이전트 라우팅 |
+| `chat-agent` | 8002 (내부 전용) | 웹 검색, 일반 대화 |
+| `browser-agent` | 8003 (내부 전용) | DOM 제어 에이전트 |
+
+`orchestrator`, `chat-agent`, `browser-agent`는 호스트에 포트를 노출하지 않는다 (`expose`만 사용). Gateway를 통해서만 접근한다.
 
 ---
 
@@ -57,7 +59,7 @@ volumes:
 
 `infra/keycloak/` 디렉토리의 JSON 파일(`realm-browser-agent.json`)이 컨테이너 시작 시 자동으로 import된다. 이미 realm이 존재하면 import를 건너뛴다.
 
-> **주의**: Keycloak이 healthy 상태가 되기까지 최초 시작 시 약 60초 소요된다. `docker-compose.services.yml`의 gateway는 `keycloak: condition: service_healthy`를 의존성으로 지정하므로 Keycloak이 준비되기 전까지 시작하지 않는다.
+> **주의**: Keycloak이 healthy 상태가 되기까지 최초 시작 시 약 60초 소요된다. `docker-compose.services.yml`의 `gateway`는 `keycloak: condition: service_healthy`를 의존성으로 지정하므로 Keycloak이 준비되기 전까지 시작하지 않는다.
 
 ---
 
@@ -66,9 +68,9 @@ volumes:
 ```
 postgres (healthy)
     ├── keycloak (postgres healthy 후 시작 → import-realm)
-    └── 각 서비스 (postgres healthy 후 시작)
+    └── orchestrator, chat-agent (postgres healthy 후 시작)
             └── gateway (keycloak healthy 후 시작)
-browser-agent (gateway started 후 시작)
+                    └── browser-agent (gateway started 후 시작)
 ```
 
 `postgres/init.sql`이 PostgreSQL 최초 초기화 시 실행된다:
@@ -94,9 +96,9 @@ CREATE EXTENSION IF NOT EXISTS vector;
 | MinIO Console | 9001 | 9001 |
 | Keycloak | 8080 | 8080 |
 | Gateway | 8000 | 8000 |
-| Orchestrator | 8001 | 8001 |
-| Chat Agent | 8002 | 8002 |
-| Browser Agent | 8003 | 8003 |
+| Orchestrator | (노출 안 함) | 8001 |
+| Chat Agent | (노출 안 함) | 8002 |
+| Browser Agent | (노출 안 함) | 8003 |
 
 ---
 
@@ -119,4 +121,22 @@ Keycloak은 별도 볼륨 없이 PostgreSQL DB(`keycloak`)에 상태를 저장�
 | MinIO | `minioadmin` | `minioadmin` | `http://localhost:9001` (Console) |
 | Keycloak Admin | `admin` | `admin` | `http://localhost:8080` |
 
-> **주의**: 위 자격증명은 로컬 개발 전용이다. 프로덕션 환경에서는 반드시 변경해야 한다.
+> **주의**: 위 자격증명은 로컬 개발 전용이다. 프로덕션 환경에서는 반드시 변경해야 한다. `.env.example`을 복사해 `.env`를 생성하고 모든 비밀번호를 교체한다.
+
+---
+
+## 환경변수 (`.env`)
+
+`.env.example`을 복사해 사용한다:
+
+```bash
+cp .env.example .env
+```
+
+| 변수 | 기본값 | 설명 |
+|------|--------|------|
+| `POSTGRES_PASSWORD` | `change_me_in_production` | PostgreSQL 비밀번호 |
+| `MINIO_ROOT_PASSWORD` | `change_me_in_production` | MinIO 관리자 비밀번호 |
+| `KC_BOOTSTRAP_ADMIN_PASSWORD` | `change_me_in_production` | Keycloak 관리자 비밀번호 |
+| `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Gateway CORS 허용 Origin (쉼표 구분) |
+| `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | 호스트 Ollama 서버 URL |

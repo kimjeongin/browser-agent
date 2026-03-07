@@ -17,7 +17,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
-from api.deps import get_broker, get_session_store, get_settings
+from api.deps import CurrentUser, get_broker, get_session_store, get_settings, verify_session_owner
 from core.invocation_broker import InvocationBroker
 from core.session_store import SessionStore
 from models import BrowserToolInvokeRequest, BrowserToolResultRequest
@@ -31,10 +31,15 @@ router = APIRouter()
 async def browser_command_stream(
     session_id: str,
     request: Request,
+    user: CurrentUser,
     store: SessionStore = Depends(get_session_store),
     broker: InvocationBroker = Depends(get_broker),
 ) -> EventSourceResponse:
     """SSE stream delivering browser tool invocations to the Extension."""
+    session = store.get(session_id)
+    if session is not None:
+        verify_session_owner(session, user)
+
     queue = broker.get_or_create_queue(session_id)
 
     async def _command_generator():
