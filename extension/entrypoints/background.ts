@@ -197,6 +197,21 @@ async function startCommandsListener() {
 
   const connect = async () => {
     while (!cancelled && _sessionId) {
+      // Ensure a valid token exists before connecting; refresh if expired.
+      if (!getAccessToken()) {
+        const stored = await browser.storage.session.get('refreshToken');
+        if (stored.refreshToken) {
+          const ok = await refreshTokens(stored.refreshToken as string);
+          if (!ok) {
+            console.warn('[Background] Token refresh failed — re-login required');
+            break;
+          }
+        } else {
+          console.warn('[Background] No refresh token available — re-login required');
+          break;
+        }
+      }
+
       try {
         const { cancel, done } = await gateway.connectCommandsSSE(
           _sessionId,
