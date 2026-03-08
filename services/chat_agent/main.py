@@ -28,6 +28,7 @@ from typing_extensions import TypedDict
 
 from shared.acp import create_acp_router
 from shared.llm import LLMSettings, create_ollama_llm
+from shared.observability import setup_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -238,6 +239,8 @@ def build_chat_graph(
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: initialise LLM, tools, graph and checkpointer."""
+    tp, lp = setup_telemetry("chat-agent", app)
+
     settings = ChatAgentSettings()
     llm_settings = LLMSettings()
 
@@ -260,6 +263,8 @@ async def lifespan(app: FastAPI):
             [t.name for t in tools],
         )
         yield
+
+    shutdown_telemetry(tp, lp)
 
 
 app = FastAPI(title="Chat Agent", version="0.1.0", lifespan=lifespan)
