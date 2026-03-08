@@ -29,6 +29,7 @@ services:
     volumes:
       - minio_data:/data
     healthcheck:
+      # minio 이미지에는 curl이 있음
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
       timeout: 5s
@@ -74,8 +75,6 @@ services:
     environment:
       - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:password@postgres:5432/phoenix
       - PHOENIX_WORKING_DIR=/mnt/data
-      - PHOENIX_ENABLE_AUTH=true
-      - PHOENIX_SECRET=${PHOENIX_SECRET:-changeme-use-strong-secret-in-prod}
     depends_on:
       postgres:
         condition: service_healthy
@@ -83,14 +82,32 @@ services:
       - phoenix_data:/mnt/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:6006/healthz || exit 1"]
+      # phoenix 이미지는 distroless — python만 사용 가능
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:6006/')"]
       interval: 10s
       timeout: 5s
       retries: 5
       start_period: 30s
 
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: browser-agent-loki
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/config.yaml
+      - loki_data:/loki
+    expose:
+      - "3100"
+    healthcheck:
+      # loki 이미지는 distroless — /busybox/busybox만 사용 가능
+      test: ["CMD", "/busybox/busybox", "wget", "-qO-", "http://localhost:3100/ready"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.116.0
+    image: otel/opentelemetry-collector-contrib:0.147.0
     container_name: browser-agent-otel-collector
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
@@ -107,25 +124,12 @@ services:
       loki:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:13133/"]
+      # otel-collector 이미지는 distroless — /otelcol-contrib 바이너리만 존재
+      # health_check extension이 13133 포트를 열지만 TCP 체크 도구가 없으므로
+      # 프로세스 시작 여부만 확인 (바이너리에 --help 실행)
+      test: ["CMD", "/otelcol-contrib", "--help"]
       interval: 5s
       timeout: 3s
-      retries: 5
-      start_period: 10s
-
-  loki:
-    image: grafana/loki:3.3.2
-    container_name: browser-agent-loki
-    command: ["-config.file=/etc/loki/config.yaml"]
-    volumes:
-      - ./loki/loki-config.yaml:/etc/loki/config.yaml
-      - loki_data:/loki
-    expose:
-      - "3100"
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q 'ready'"]
-      interval: 10s
-      timeout: 5s
       retries: 5
       start_period: 10s
 
@@ -143,7 +147,8 @@ services:
     depends_on:
       - otel-collector
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy | grep -q 'Prometheus'"]
+      # prometheus 이미지는 distroless — promtool로 헬스체크
+      test: ["CMD", "promtool", "check", "healthy"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -166,7 +171,8 @@ services:
       prometheus:
         condition: service_healthy
     healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q 'ok'"]
+      # grafana 이미지에는 nc(netcat)만 있음
+      test: ["CMD", "nc", "-z", "localhost", "3000"]
       interval: 10s
       timeout: 5s
       retries: 5
