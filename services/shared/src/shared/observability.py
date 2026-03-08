@@ -35,20 +35,8 @@ _meter_provider: MeterProvider | None = None
 
 
 def _resolve_base_endpoint() -> str:
-    """OTEL_EXPORTER_OTLP_ENDPOINT를 베이스 URL로 정규화.
-
-    레거시 Phoenix 직접 연결 포맷(http://host:port/v1/traces)도 허용.
-    """
-    raw = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", _DEFAULT_ENDPOINT).rstrip("/")
-    # 레거시 포맷 호환: /v1/traces 접미사 제거
-    if raw.endswith("/v1/traces"):
-        _logger.warning(
-            "OTEL_EXPORTER_OTLP_ENDPOINT has legacy '/v1/traces' suffix. "
-            "Stripping to base URL — logs and metrics will also route to this host. "
-            "Update to OTel Collector URL: http://otel-collector:4318"
-        )
-        raw = raw[: -len("/v1/traces")]
-    return raw
+    """OTEL_EXPORTER_OTLP_ENDPOINT 환경변수에서 베이스 URL 반환."""
+    return os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", _DEFAULT_ENDPOINT).rstrip("/")
 
 
 def setup_telemetry(

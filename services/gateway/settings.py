@@ -8,9 +8,6 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = (
-        "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
-    )
     orchestrator_url: str = "http://orchestrator:8001"
     # Public realm URL -- must match the ``iss`` claim in JWTs issued by Keycloak.
     keycloak_realm_url: str = "http://localhost:8080/realms/browser-agent"
