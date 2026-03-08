@@ -25,6 +25,7 @@ from shared.acp.client import ACPClient
 from shared.acp.server import RunRequest, create_acp_router
 from shared.llm.factory import create_ollama_llm
 from shared.llm.settings import LLMSettings
+from shared.observability import setup_telemetry, shutdown_telemetry
 
 from classifier import CLASSIFICATION_SYSTEM_PROMPT, parse_agent_from_response
 
@@ -243,6 +244,8 @@ def _psycopg_connection_string(database_url: str) -> str:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan: initialise LLM, clients, and the graph."""
+    tp, lp = setup_telemetry("orchestrator", app)
+
     conn_string = _psycopg_connection_string(settings.database_url)
 
     async with AsyncPostgresSaver.from_conn_string(conn_string) as checkpointer:
@@ -279,6 +282,7 @@ async def lifespan(app: FastAPI):
 
     await chat_client.close()
     await browser_client.close()
+    shutdown_telemetry(tp, lp)
 
 
 app = FastAPI(

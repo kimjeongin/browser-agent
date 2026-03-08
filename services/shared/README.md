@@ -7,6 +7,7 @@
 - Keycloak JWKS JWT 검증 로직과 FastAPI 의존성을 제공한다.
 - ACP 서버 라우터와 ACP HTTP 클라이언트를 제공한다.
 - ChatOllama 팩토리 함수와 공통 LLM 설정을 제공한다.
+- OTel traces/logs/metrics 초기화와 JSON 구조화 로그 포맷을 제공한다.
 - 도메인 Pydantic 모델(`Session`)을 정의한다.
 
 ## 모듈 목록
@@ -16,6 +17,8 @@
 | `shared.auth` | `jwt_verifier.py`, `dependencies.py` | Keycloak JWKS JWT 검증, FastAPI 의존성 |
 | `shared.acp` | `server.py`, `client.py` | ACP 서버 라우터 팩토리, ACP HTTP 클라이언트 |
 | `shared.llm` | `factory.py`, `settings.py` | ChatOllama 팩토리, LLM 공통 설정 |
+| `shared.observability` | `observability.py` | OTel traces + logs + metrics 초기화 팩토리 |
+| `shared.logging_config` | `logging_config.py` | JSON 구조화 로그 포맷 (`python-json-logger`) |
 | `shared.models` | `session.py` | `Session` Pydantic 모델 |
 
 ---
@@ -133,6 +136,72 @@ llm_with_tools = llm.bind_tools(tools)
 | `created_at` | datetime | 세션 생성 시각 (UTC) |
 | `last_activity` | datetime | 마지막 활동 시각 (UTC) |
 
+---
+
+### `shared.observability`
+
+#### `setup_telemetry` (`observability.py`)
+
+FastAPI 서비스의 OTel traces, logs, metrics를 한 번에 초기화한다. `lifespan` 시작 시 호출하고, lifespan 종료 시 `shutdown_telemetry()`를 호출한다.
+
+```python
+from shared.observability import setup_telemetry, shutdown_telemetry
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    tp, lp = setup_telemetry("my-service", app)
+    yield
+    shutdown_telemetry(tp, lp)
+```
+
+`setup_telemetry`가 초기화하는 항목:
+
+| 신호 | 엔드포인트 | 계측 라이브러리 |
+|------|-----------|----------------|
+| Traces | `OTEL_EXPORTER_OTLP_ENDPOINT/v1/traces` | `LangChainInstrumentor`, `HTTPXClientInstrumentor` |
+| Logs | `OTEL_EXPORTER_OTLP_ENDPOINT/v1/logs` | `LoggingInstrumentor` (trace_id/span_id 자동 주입) |
+| Metrics | `OTEL_EXPORTER_OTLP_ENDPOINT/v1/metrics` | `FastAPIInstrumentor`, `SystemMetricsInstrumentor` |
+
+메트릭은 15초마다 내보낸다 (`PeriodicExportingMetricReader`).
+
+`OTEL_EXPORTER_OTLP_ENDPOINT` 기본값: `http://otel-collector:4318`
+
+레거시 Phoenix 직접 연결 포맷(`http://host:port/v1/traces`)도 허용한다. `/v1/traces` 접미사를 자동으로 제거해 base URL로 정규화한다.
+
+#### `shutdown_telemetry` (`observability.py`)
+
+pending span/log/metric을 flush하고 provider를 종료한다.
+
+---
+
+### `shared.logging_config`
+
+#### `configure_logging` (`logging_config.py`)
+
+root logger에 JSON 포맷 핸들러를 설치한다. `setup_telemetry()` 내부에서 자동으로 호출되므로 개별 서비스에서 별도 호출이 불필요하다.
+
+> **주의**: `LoggingInstrumentor().instrument()` 이후에 호출해야 한다. 순서가 역전되면 `trace_id`/`span_id`가 로그에 주입되지 않는다.
+
+출력 JSON 필드:
+
+| 필드 | 설명 |
+|------|------|
+| `timestamp` | ISO 8601 (`%Y-%m-%dT%H:%M:%S`) |
+| `level` | `INFO`, `WARNING`, `ERROR`, ... |
+| `logger` | Python 로거 이름 |
+| `message` | 로그 메시지 |
+| `service` | `setup_telemetry(service_name)` 에 전달한 값 |
+| `hostname` | 컨테이너 호스트명 |
+| `location` | `파일명:라인번호` |
+| `trace_id` | OTel trace ID (트레이스 컨텍스트가 없으면 생략) |
+| `span_id` | OTel span ID (트레이스 컨텍스트가 없으면 생략) |
+
+`LOG_LEVEL` 환경변수로 로그 레벨을 제어한다 (기본값: `INFO`).
+
+---
+
 ## 설치 방법
 
 각 서비스의 `pyproject.toml`에서 editable 모드로 참조한다.
@@ -162,6 +231,8 @@ services/shared/
 └── src/
     └── shared/
         ├── __init__.py
+        ├── observability.py   # setup_telemetry, shutdown_telemetry
+        ├── logging_config.py  # configure_logging, _ServiceJsonFormatter
         ├── acp/
         │   ├── __init__.py
         │   ├── client.py      # ACPClient

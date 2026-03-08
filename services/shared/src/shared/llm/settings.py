@@ -10,8 +10,5 @@ class LLMSettings(BaseSettings):
 
     ollama_base_url: str = "http://host.docker.internal:11434"
     orchestrator_model: str = "qwen3:8b"
-    browser_agent_model: str = "qwen3:14b"
-    chat_agent_model: str = "qwen3:8b"
-    vision_model: str = "qwen3vl:8b"
     llm_temperature: float = 0.0
     llm_num_ctx: int = 8192

@@ -21,6 +21,7 @@ from core.invocation_broker import InvocationBroker
 from settings import Settings
 from shared.acp.client import ACPClient
 from shared.auth.jwt_verifier import KeycloakJWTVerifier
+from shared.observability import setup_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -28,6 +29,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Initialise and tear down application-wide resources."""
+    tp, lp = setup_telemetry("gateway", app)
+
     s = Settings()
 
     app.state.session_store = SessionStore(ttl_seconds=s.session_ttl)
@@ -51,6 +54,7 @@ async def lifespan(app: FastAPI):
     except asyncio.CancelledError:
         pass
     logger.info("Gateway shutdown complete")
+    shutdown_telemetry(tp, lp)
 
 
 app = FastAPI(

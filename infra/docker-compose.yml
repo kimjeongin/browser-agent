@@ -66,6 +66,116 @@ services:
       retries: 10
       start_period: 60s
 
+  phoenix:
+    image: arizephoenix/phoenix:version-13.10.0
+    container_name: browser-agent-phoenix
+    ports:
+      - "6006:6006"
+    environment:
+      - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:password@postgres:5432/phoenix
+      - PHOENIX_WORKING_DIR=/mnt/data
+      - PHOENIX_ENABLE_AUTH=true
+      - PHOENIX_SECRET=${PHOENIX_SECRET:-changeme-use-strong-secret-in-prod}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - phoenix_data:/mnt/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:6006/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.116.0
+    container_name: browser-agent-otel-collector
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./otel/otel-collector-config.yaml:/etc/otel/config.yaml
+    ports:
+      - "4317:4317"   # OTLP gRPC
+      - "4318:4318"   # OTLP HTTP
+    expose:
+      - "8889"        # Prometheus metrics (내부 전용)
+      - "13133"       # Health check (내부 전용)
+    depends_on:
+      phoenix:
+        condition: service_healthy
+      loki:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:13133/"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  loki:
+    image: grafana/loki:3.3.2
+    container_name: browser-agent-loki
+    command: ["-config.file=/etc/loki/config.yaml"]
+    volumes:
+      - ./loki/loki-config.yaml:/etc/loki/config.yaml
+      - loki_data:/loki
+    expose:
+      - "3100"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3100/ready | grep -q 'ready'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    container_name: browser-agent-prometheus
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--storage.tsdb.retention.time=15d"
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    depends_on:
+      - otel-collector
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9090/-/healthy | grep -q 'Prometheus'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    container_name: browser-agent-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
+      - GF_AUTH_ANONYMOUS_ENABLED=false
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    depends_on:
+      loki:
+        condition: service_healthy
+      prometheus:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/api/health | grep -q 'ok'"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 volumes:
   postgres_data:
   minio_data:
+  phoenix_data:
+  loki_data:
+  prometheus_data:
+  grafana_data:

@@ -1,6 +1,9 @@
 -- keycloak DB 생성
 CREATE DATABASE keycloak;
 
+-- phoenix DB 생성
+CREATE DATABASE phoenix;
+
 -- browser_agent DB에 pgvector 확장 설치
 \c browser_agent;
 CREATE EXTENSION IF NOT EXISTS "uuid-ossp";

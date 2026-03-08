@@ -16,6 +16,7 @@ from tools.browser_tools import BROWSER_TOOLS
 from graph.builder import build_browser_graph
 from shared.acp import create_acp_router
 from shared.llm import LLMSettings, create_ollama_llm
+from shared.observability import setup_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +24,8 @@ logger = logging.getLogger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: connect to Gateway, build LLMs and graph; shutdown: clean up."""
+    tp, lp = setup_telemetry("browser-agent", app)
+
     agent_settings = BrowserAgentSettings()
     llm_settings = LLMSettings()
 
@@ -65,6 +68,7 @@ async def lifespan(app: FastAPI):
 
     await gateway_client.close()
     cleanup()
+    shutdown_telemetry(tp, lp)
 
 
 app = FastAPI(title="Browser Agent", version="0.3.0", lifespan=lifespan)

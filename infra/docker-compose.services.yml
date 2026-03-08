@@ -10,16 +10,18 @@ services:
     ports: ["8000:8000"]
     environment:
       CORS_ORIGINS: ${CORS_ORIGINS:-*}
-      DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       ORCHESTRATOR_URL: http://orchestrator:8001
       KEYCLOAK_REALM_URL: http://localhost:8080/realms/browser-agent
       KEYCLOAK_JWKS_URL: http://keycloak:8080/realms/browser-agent/protocol/openid-connect/certs
       KEYCLOAK_AUDIENCE: browser-agent-extension
       BROWSER_TOOL_TIMEOUT: "60"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     depends_on:
       postgres:
         condition: service_healthy
       keycloak:
+        condition: service_healthy
+      otel-collector:
         condition: service_healthy
 
   orchestrator:
@@ -34,10 +36,13 @@ services:
       CHAT_AGENT_URL: http://chat-agent:8002
       BROWSER_AGENT_URL: http://browser-agent:8003
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
+        condition: service_healthy
+      otel-collector:
         condition: service_healthy
 
   chat-agent:
@@ -50,10 +55,13 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       CHAT_MODEL: qwen3:8b
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
       postgres:
+        condition: service_healthy
+      otel-collector:
         condition: service_healthy
 
   browser-agent:
@@ -66,10 +74,10 @@ services:
       OLLAMA_BASE_URL: http://host.docker.internal:11434
       BROWSER_MODEL: qwen3:8b
       PLANNER_MODEL: qwen3:8b
-      VISION_MODEL: qwen3vl:8b
       GATEWAY_URL: http://gateway:8000
       DATABASE_URL: postgresql+asyncpg://postgres:${POSTGRES_PASSWORD:-password}@postgres:5432/browser_agent
       BROWSER_TOOL_TIMEOUT: "65"
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
     extra_hosts:
       - "host.docker.internal:host-gateway"
     depends_on:
@@ -77,3 +85,5 @@ services:
         condition: service_healthy
       gateway:
         condition: service_started
+      otel-collector:
+        condition: service_healthy
