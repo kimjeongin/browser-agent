@@ -2,11 +2,20 @@
 
 import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
 
 
-def _tool_msg(content: str, tool_call_id: str = "call-001") -> ToolMessage:
-    return ToolMessage(content=content, tool_call_id=tool_call_id)
+def _tool_msg(
+    content: str,
+    tool_call_id: str = "call-001",
+    name: str | None = None,
+    artifact: Any = None,
+) -> ToolMessage:
+    msg = ToolMessage(content=content, tool_call_id=tool_call_id, name=name)
+    if artifact is not None:
+        msg.artifact = artifact
+    return msg
 
 
 # ---------------------------------------------------------------------------
@@ -78,6 +87,37 @@ def test_route_after_progress_returns_replan_when_stuck_in_loop():
         "stall_count": 0,
     }
     assert route_after_progress(state) == "replan"
+
+
+def test_route_after_progress_returns_end_when_max_replan_reached():
+    """When replan_count >= MAX_REPLAN_COUNT and stuck, should return END instead of replan."""
+    from langgraph.graph import END as GRAPH_END
+    from graph.router import route_after_progress
+    from graph.state import MAX_REPLAN_COUNT
+
+    state = {
+        "messages": [],
+        "progress_ledger": {"is_task_complete": False, "is_stuck_in_loop": True},
+        "stall_count": 0,
+        "replan_count": MAX_REPLAN_COUNT,
+    }
+    result = route_after_progress(state)
+    assert result == GRAPH_END
+
+
+def test_route_after_progress_returns_replan_when_under_max_replan():
+    """When replan_count < MAX_REPLAN_COUNT and stuck, should still return replan."""
+    from graph.router import route_after_progress
+    from graph.state import MAX_REPLAN_COUNT
+
+    state = {
+        "messages": [],
+        "progress_ledger": {"is_task_complete": False, "is_stuck_in_loop": True},
+        "stall_count": 0,
+        "replan_count": MAX_REPLAN_COUNT - 1,
+    }
+    result = route_after_progress(state)
+    assert result == "replan"
 
 
 # ---------------------------------------------------------------------------
@@ -164,6 +204,58 @@ def test_progress_check_node_resets_stall_count_when_progressing():
     assert result["stall_count"] == 0  # reset on progress
 
 
+def test_progress_check_node_caches_screenshot_after_screenshot_tool():
+    """progress_check_node should store screenshot result in last_screenshot state."""
+    from graph.nodes import progress_check_node
+
+    screenshot_artifact = {
+        "screenshot": "base64encodeddata",
+        "marks": {"1": {"x": 10, "y": 20}, "2": {"x": 30, "y": 40}},
+    }
+    state = {
+        "messages": [
+            _tool_msg(
+                content="Screenshot taken with 2 marks",
+                name="screenshot",
+                artifact=screenshot_artifact,
+            ),
+        ],
+        "stall_count": 0,
+        "action_history": ["screenshot"],
+    }
+
+    result = progress_check_node(state)
+
+    assert result["last_screenshot"] is not None
+    assert result["last_screenshot"]["screenshot"] == "base64encodeddata"
+    assert len(result["last_screenshot"]["marks"]) == 2
+
+
+def test_progress_check_node_invalidates_screenshot_after_navigate():
+    """progress_check_node should clear last_screenshot when last tool is navigate."""
+    from graph.nodes import progress_check_node
+
+    state = {
+        "messages": [
+            _tool_msg(
+                content="Navigated to: https://youtube.com",
+                name="navigate",
+            ),
+        ],
+        "stall_count": 0,
+        "action_history": ["navigate"],
+        "last_screenshot": {
+            "screenshot": "old_cached_data",
+            "marks": {"1": {"x": 10, "y": 20}},
+        },
+    }
+
+    result = progress_check_node(state)
+
+    assert result["last_screenshot"] is None
+    assert result["last_navigated_url"] == "Navigated to: https://youtube.com"
+
+
 # ---------------------------------------------------------------------------
 # replan_node
 # ---------------------------------------------------------------------------
@@ -207,6 +299,50 @@ async def test_replan_node_clears_action_history():
 
     result = await replan_node(state, llm=mock_llm)
     assert result["action_history"] == []
+
+
+@pytest.mark.asyncio
+async def test_replan_node_increments_replan_count():
+    """replan_node should increment replan_count from its current value."""
+    from graph.nodes import replan_node
+
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(
+        return_value=AIMessage(content="Try a different selector.")
+    )
+
+    state = {
+        "messages": [HumanMessage(content="Search YouTube")],
+        "session_id": "sess-001",
+        "stall_count": 3,
+        "action_history": ["browser_click", "browser_click", "browser_click"],
+        "replan_count": 1,
+    }
+
+    result = await replan_node(state, llm=mock_llm)
+    assert result["replan_count"] == 2
+
+
+@pytest.mark.asyncio
+async def test_replan_node_initializes_replan_count_when_missing():
+    """replan_node should start replan_count at 1 when not present in state."""
+    from graph.nodes import replan_node
+
+    mock_llm = MagicMock()
+    mock_llm.ainvoke = AsyncMock(
+        return_value=AIMessage(content="Use screenshot to inspect the page.")
+    )
+
+    state = {
+        "messages": [HumanMessage(content="Search YouTube")],
+        "session_id": "sess-001",
+        "stall_count": 3,
+        "action_history": ["browser_click", "browser_click", "browser_click"],
+        # replan_count intentionally omitted
+    }
+
+    result = await replan_node(state, llm=mock_llm)
+    assert result["replan_count"] == 1
 
 
 # ---------------------------------------------------------------------------

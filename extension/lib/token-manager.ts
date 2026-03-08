@@ -16,14 +16,14 @@ let _tokenExpiry: number | null = null;
 // Public API
 // ---------------------------------------------------------------------------
 
-export function setTokens(
+export async function setTokens(
   accessToken: string,
   expiresIn: number,
   refreshToken: string,
-): void {
+): Promise<void> {
   _accessToken = accessToken;
   _tokenExpiry = Date.now() + expiresIn * 1000;
-  browser.storage.session.set({ refreshToken });
+  await browser.storage.session.set({ refreshToken });
 }
 
 export function getAccessToken(): string | null {

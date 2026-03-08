@@ -165,7 +165,7 @@ cp .env.example .env
 | `KC_BOOTSTRAP_ADMIN_PASSWORD` | `change_me_in_production` | Keycloak 관리자 비밀번호 |
 | `CORS_ORIGINS` | `http://localhost:3000,http://localhost:5173` | Gateway CORS 허용 Origin (쉼표 구분) |
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | 호스트 Ollama 서버 URL |
-| `PHOENIX_SECRET` | `changeme-use-strong-secret-in-prod` | Phoenix 인증 시크릿 키 |
+| `PHOENIX_SECRET` | (미사용) | Phoenix 인증 비활성화 (dev 환경) |
 | `GRAFANA_ADMIN_PASSWORD` | `admin` | Grafana 관리자 비밀번호 |
 
 ---

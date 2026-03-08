@@ -18,13 +18,13 @@ from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, System
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 from typing_extensions import TypedDict
 
 from shared.acp.client import ACPClient
 from shared.acp.server import RunRequest, create_acp_router
 from shared.llm.factory import create_ollama_llm
-from shared.llm.settings import LLMSettings
+from shared.llm.settings import CommonAgentSettings
 from shared.observability import setup_telemetry, shutdown_telemetry
 
 from classifier import CLASSIFICATION_SYSTEM_PROMPT, parse_agent_from_response
@@ -32,22 +32,27 @@ from classifier import CLASSIFICATION_SYSTEM_PROMPT, parse_agent_from_response
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
+# Agent name constants
+# ---------------------------------------------------------------------------
+
+CHAT_AGENT = "chat_agent"
+BROWSER_AGENT = "browser_agent"
+
+# ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
 
 
-class OrchestratorSettings(BaseSettings):
+class OrchestratorSettings(CommonAgentSettings):
     """Environment-driven configuration for the Orchestrator service."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
     chat_agent_url: str = "http://chat-agent:8002"
     browser_agent_url: str = "http://browser-agent:8003"
-    database_url: str = "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
 
 
 settings = OrchestratorSettings()
-llm_settings = LLMSettings()
 
 # ---------------------------------------------------------------------------
 # Supervisor graph state
@@ -89,7 +94,7 @@ async def supervisor_node(
             break
 
     if not last_human_msg:
-        return {"next_agent": "chat_agent"}
+        return {"next_agent": CHAT_AGENT}
 
     agent = await _classify_intent(llm, last_human_msg)
     logger.info("Supervisor classified intent as '%s' for: %.80s", agent, last_human_msg)
@@ -201,9 +206,9 @@ def _extract_response_text(result: dict[str, Any]) -> str:
 
 def route_from_supervisor(state: SupervisorState) -> str:
     """Conditional edge: pick the sub-agent node based on supervisor decision."""
-    if state.get("next_agent") == "browser_agent":
-        return "browser_agent"
-    return "chat_agent"
+    if state.get("next_agent") == BROWSER_AGENT:
+        return BROWSER_AGENT
+    return CHAT_AGENT
 
 
 # ---------------------------------------------------------------------------
@@ -221,13 +226,13 @@ def build_supervisor_graph(
     builder = StateGraph(SupervisorState)
 
     builder.add_node("supervisor", partial(supervisor_node, llm=llm))
-    builder.add_node("chat_agent", partial(call_chat_agent, chat_client=chat_client))
-    builder.add_node("browser_agent", partial(call_browser_agent, browser_client=browser_client))
+    builder.add_node(CHAT_AGENT, partial(call_chat_agent, chat_client=chat_client))
+    builder.add_node(BROWSER_AGENT, partial(call_browser_agent, browser_client=browser_client))
 
     builder.set_entry_point("supervisor")
     builder.add_conditional_edges("supervisor", route_from_supervisor)
-    builder.add_edge("chat_agent", END)
-    builder.add_edge("browser_agent", END)
+    builder.add_edge(CHAT_AGENT, END)
+    builder.add_edge(BROWSER_AGENT, END)
 
     return builder.compile(checkpointer=checkpointer)
 
@@ -252,8 +257,8 @@ async def lifespan(app: FastAPI):
         await checkpointer.setup()
 
         llm = create_ollama_llm(
-            model=llm_settings.orchestrator_model,
-            settings=llm_settings,
+            model=settings.orchestrator_model,
+            settings=settings,
             streaming=False,
         )
 
@@ -340,19 +345,19 @@ async def stream_run(body: RunRequest, request: Request) -> StreamingResponse:
             last_human = msg.get("content", "")
             break
 
-    agent = "chat_agent"
+    agent = CHAT_AGENT
     if last_human:
         try:
             agent = await _classify_intent(_llm, last_human)
         except Exception:
-            logger.exception("Classification failed, defaulting to chat_agent")
+            logger.exception("Classification failed, defaulting to %s", CHAT_AGENT)
 
     logger.info(
         "Stream run: intent=%s thread=%s", agent, body.thread_id
     )
 
     # ── Phase 2: stream from the classified sub-agent ───────────────────────
-    if agent == "browser_agent":
+    if agent == BROWSER_AGENT:
         client = _browser_client
         # Browser agent needs session_id in the input for tool calls
         sub_input = body.input

@@ -23,11 +23,11 @@ from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import SettingsConfigDict
 from typing_extensions import TypedDict
 
 from shared.acp import create_acp_router
-from shared.llm import LLMSettings, create_ollama_llm
+from shared.llm import CommonAgentSettings, LLMSettings, create_ollama_llm
 from shared.observability import setup_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
@@ -36,17 +36,12 @@ logger = logging.getLogger(__name__)
 # Settings
 # ---------------------------------------------------------------------------
 
-class ChatAgentSettings(BaseSettings):
+class ChatAgentSettings(CommonAgentSettings):
     """Environment-driven configuration for the Chat Agent."""
 
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    database_url: str = (
-        "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
-    )
     chat_model: str = "qwen3:8b"
-
-    # Inherited LLM settings are loaded by LLMSettings separately.
 
 
 # ---------------------------------------------------------------------------
@@ -242,7 +237,6 @@ async def lifespan(app: FastAPI):
     tp, lp = setup_telemetry("chat-agent", app)
 
     settings = ChatAgentSettings()
-    llm_settings = LLMSettings()
 
     # AsyncPostgresSaver requires a plain postgresql:// DSN (psycopg).
     db_url = settings.database_url.replace(
@@ -252,7 +246,7 @@ async def lifespan(app: FastAPI):
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()
 
-        llm = create_ollama_llm(settings.chat_model, llm_settings)
+        llm = create_ollama_llm(settings.chat_model, settings)
         tools = [web_search, fetch_webpage]
         llm_with_tools = llm.bind_tools(tools)
 

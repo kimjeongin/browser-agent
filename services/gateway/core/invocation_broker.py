@@ -38,8 +38,14 @@ class InvocationBroker:
         if entry is None:
             return False
         future, _ = entry
-        if not future.done():
-            future.set_result(result)
+        if future.done():
+            # Already resolved — idempotent handling for Extension retries
+            logger.warning("resolve_invocation called on already-done future: inv_id=%s", inv_id)
+            return True
+        future.set_result(result)
+        # Clean up immediately to minimize done-but-still-in-dict window
+        self._pending.pop(inv_id, None)
+        self._inv_to_session.pop(inv_id, None)
         return True
 
     def cleanup_invocation(self, inv_id: str) -> None:

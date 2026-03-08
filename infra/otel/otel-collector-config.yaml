@@ -22,14 +22,9 @@ exporters:
     tls:
       insecure: true
 
-  # System logs → Loki
-  loki:
-    endpoint: http://loki:3100/loki/api/v1/push
-    default_labels_enabled:
-      exporter: false
-      job: true      # service.name → job 레이블
-      instance: false
-      level: true    # severity → level 레이블
+  # System logs → Loki (OTLP native, Loki 2.9+)
+  otlphttp/loki:
+    endpoint: http://loki:3100/otlp
 
   # Metrics → Prometheus scrape endpoint
   prometheus:
@@ -53,7 +48,7 @@ service:
     logs:
       receivers: [otlp]
       processors: [memory_limiter, batch]
-      exporters: [loki]
+      exporters: [otlphttp/loki]
 
     metrics:
       receivers: [otlp]
