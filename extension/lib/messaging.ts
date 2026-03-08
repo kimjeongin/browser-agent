@@ -11,7 +11,9 @@ export type Message =
   | { type: 'LOGOUT' }
   | { type: 'GET_ACCESS_TOKEN' }
   | { type: 'CHAT_MESSAGE'; content: string; sessionId: string }
-  | { type: 'CHAT_MESSAGE_STREAM'; content: string; sessionId: string };
+  | { type: 'CHAT_MESSAGE_STREAM'; content: string; sessionId: string }
+  | { type: 'RECOVER_SESSION' }
+  | { type: 'FOCUS_AGENT_TAB' };
 
 export type MessageResponse =
   | { success: true; data: unknown }

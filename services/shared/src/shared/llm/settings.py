@@ -12,3 +12,11 @@ class LLMSettings(BaseSettings):
     orchestrator_model: str = "qwen3:8b"
     llm_temperature: float = 0.0
     llm_num_ctx: int = 8192
+
+
+class CommonAgentSettings(LLMSettings):
+    """Common base for Orchestrator/ChatAgent/BrowserAgent. Provides database_url."""
+
+    database_url: str = (
+        "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
+    )

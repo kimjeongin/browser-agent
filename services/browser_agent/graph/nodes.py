@@ -77,6 +77,16 @@ async def actor_node(state: AgentState, *, llm_with_tools: Any) -> dict[str, Any
     if hint:
         system_content += f"\n\nSuggested next action: {hint}"
 
+    # Inject screenshot cache hint to avoid redundant screenshot calls
+    last_screenshot = state.get("last_screenshot")
+    if isinstance(last_screenshot, dict):
+        marks = last_screenshot.get("marks", {})
+        mark_count = len(marks) if isinstance(marks, dict) else 0
+        system_content += (
+            f"\n\nCACHED SCREENSHOT AVAILABLE: {mark_count} marks found. "
+            "Use click_by_mark_id without calling screenshot again."
+        )
+
     # Replace or inject system prompt
     if not messages or not isinstance(messages[0], SystemMessage):
         messages = [SystemMessage(content=system_content), *messages]
@@ -128,6 +138,27 @@ def progress_check_node(state: AgentState) -> dict[str, Any]:
     # Update stall count
     new_stall_count = 0 if is_making_progress else stall_count + 1
 
+    # Screenshot cache management
+    last_screenshot = state.get("last_screenshot")
+    last_navigated_url = state.get("last_navigated_url")
+    last_tool_msg: ToolMessage | None = None
+    for msg in reversed(messages):
+        if isinstance(msg, ToolMessage):
+            last_tool_msg = msg
+            break
+
+    if last_tool_msg is not None:
+        tool_name = getattr(last_tool_msg, "name", None)
+        if tool_name == "navigate":
+            last_screenshot = None
+            # Extract URL from the tool message content
+            content_str = str(last_tool_msg.content) if last_tool_msg.content else ""
+            last_navigated_url = content_str
+        elif tool_name == "screenshot":
+            artifact = getattr(last_tool_msg, "artifact", None)
+            if isinstance(artifact, dict):
+                last_screenshot = artifact
+
     ledger = {
         "is_task_complete": False,
         "is_making_progress": is_making_progress,
@@ -137,6 +168,8 @@ def progress_check_node(state: AgentState) -> dict[str, Any]:
     return {
         "progress_ledger": ledger,
         "stall_count": new_stall_count,
+        "last_screenshot": last_screenshot,
+        "last_navigated_url": last_navigated_url,
     }
 
 
@@ -162,8 +195,10 @@ async def replan_node(state: AgentState, *, llm: Any) -> dict[str, Any]:
     ]
 
     response = await llm.ainvoke(replan_input)
+    replan_count = (state.get("replan_count") or 0) + 1
     return {
         "messages": [response],
         "stall_count": 0,
         "action_history": [],
+        "replan_count": replan_count,
     }

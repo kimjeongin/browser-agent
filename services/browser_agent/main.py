@@ -15,7 +15,7 @@ from tools.gateway_client import initialize_client, cleanup
 from tools.browser_tools import BROWSER_TOOLS
 from graph.builder import build_browser_graph
 from shared.acp import create_acp_router
-from shared.llm import LLMSettings, create_ollama_llm
+from shared.llm import create_ollama_llm
 from shared.observability import setup_telemetry, shutdown_telemetry
 
 logger = logging.getLogger(__name__)
@@ -27,7 +27,6 @@ async def lifespan(app: FastAPI):
     tp, lp = setup_telemetry("browser-agent", app)
 
     agent_settings = BrowserAgentSettings()
-    llm_settings = LLMSettings()
 
     # AsyncPostgresSaver requires a plain postgresql:// DSN (psycopg).
     db_url = agent_settings.database_url.replace(
@@ -44,11 +43,11 @@ async def lifespan(app: FastAPI):
 
     # Main actor LLM -- qwen2.5vl supports multimodal input so it can
     # directly inspect screenshot images returned by the screenshot tool.
-    actor_llm = create_ollama_llm(agent_settings.browser_model, llm_settings)
+    actor_llm = create_ollama_llm(agent_settings.browser_model, agent_settings)
     llm_with_tools = actor_llm.bind_tools(BROWSER_TOOLS)
 
     # Planner/progress-check/replan use lighter model for speed
-    planner_llm = create_ollama_llm(agent_settings.planner_model, llm_settings)
+    planner_llm = create_ollama_llm(agent_settings.planner_model, agent_settings)
 
     async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
         await checkpointer.setup()

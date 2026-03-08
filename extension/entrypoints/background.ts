@@ -8,8 +8,11 @@ import {
   setAgentTabId,
   resetAgentTab,
   cleanupOldAITabGroups,
+  navigateAgentTab,
+  ensureAgentTab,
+  captureAgentTabScreenshot,
+  waitForTabLoad,
 } from '@/lib/tab-manager';
-import { executeToolInvocation } from '@/services/command-executor';
 
 // ---------------------------------------------------------------------------
 // Session state (background's core responsibility)
@@ -96,7 +99,7 @@ async function login(): Promise<{
     if (!tokenRes.ok) throw new Error('Token exchange failed');
     const tokens = await tokenRes.json();
 
-    setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
+    await setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
 
     let session: { session_id: string };
     try {
@@ -141,7 +144,7 @@ async function refreshTokens(refreshToken: string): Promise<boolean> {
     );
     if (!res.ok) return false;
     const tokens = await res.json();
-    setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
+    await setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
     return true;
   } catch {
     return false;
@@ -233,7 +236,30 @@ async function startCommandsListener() {
               await browser.action.setBadgeText({ text: '\u25CF' });
               await browser.action.setBadgeBackgroundColor({ color: '#3b82f6' });
 
-              const result = await executeToolInvocation(inv);
+              const result = await (async () => {
+                const { tool_name, params } = inv;
+                try {
+                  if (tool_name === 'navigate') {
+                    const url = params.url as string;
+                    await navigateAgentTab(url);
+                    const tabId = getAgentTabId();
+                    await waitForTabLoad(tabId!);
+                    return { success: true, result: { url, navigated: true } };
+                  }
+                  if (tool_name === 'screenshot') {
+                    const screenshot = await captureAgentTabScreenshot();
+                    return { success: true, result: screenshot };
+                  }
+                  const tabId = await ensureAgentTab();
+                  const cmdResult = await browser.tabs.sendMessage(tabId, {
+                    type: 'EXECUTE_BROWSER_COMMAND',
+                    command: { command_id: inv.inv_id, action: tool_name, params },
+                  });
+                  return cmdResult as { success: boolean; result?: unknown; error?: string };
+                } catch (err) {
+                  return { success: false, error: (err as Error).message };
+                }
+              })();
               await gateway.postToolResult(_sessionId!, inv.inv_id, result);
             } catch (err) {
               await gateway.postToolResult(_sessionId!, inv.inv_id, {
