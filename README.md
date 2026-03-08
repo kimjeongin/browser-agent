@@ -203,19 +203,19 @@ uvicorn main:app --host 0.0.0.0 --port 8000 --reload
 ### 테스트 실행
 
 ```bash
-# Gateway 테스트 (health, browser tools round-trip, stale cleanup)
+# Gateway 테스트 (health, browser tools round-trip, stale cleanup) — 19개
 cd services/gateway && uv run pytest
 
-# Browser Agent 테스트 (tools, gateway_client, progress_ledger)
-cd services/browser_agent && uv run pytest
-
-# Orchestrator 테스트 (supervisor routing)
+# Orchestrator 테스트 (supervisor routing) — 31개
 cd services/orchestrator && uv run pytest
 
-# Chat Agent 테스트 (web_search, fetch_webpage)
+# Chat Agent 테스트 (web_search, fetch_webpage) — 14개
 cd services/chat_agent && uv run pytest
 
-# Extension 테스트 (SSE 파싱, URL 구성, 메시지 포맷)
+# Browser Agent 테스트 (tools, gateway_client, progress_ledger) — 62개
+cd services/browser_agent && uv run pytest
+
+# Extension 테스트 (background, content script) — 56개
 cd extension && pnpm test
 ```
 
@@ -230,7 +230,9 @@ browser-agent/
 │   │   ├── background.ts        # PKCE 인증, commands SSE 수신, 탭 그룹 관리
 │   │   ├── content.ts           # DOM 액션 실행 (click, type, scroll 등)
 │   │   └── sidepanel/           # 채팅 UI + 브라우저 제어 상태 배너
-│   ├── lib/                     # GatewayClient, PKCE 유틸, 메시지 헬퍼
+│   ├── services/
+│   │   └── command-executor.ts  # 도구 호출 디스패처 (navigate/screenshot vs content script)
+│   ├── lib/                     # GatewayClient, PKCE 유틸, tab-manager, token-manager
 │   └── stores/                  # Zustand 상태 (채팅, 브라우저 제어 상태)
 ├── services/
 │   ├── shared/                  # 공유 패키지 (auth, acp, llm, observability, models)

@@ -57,8 +57,8 @@ const reader = res.body!.getReader();
 ## 브라우저 도구 실행 흐름
 
 1. `background.ts`가 `GET /sessions/{id}/commands` SSE 채널을 구독한다 (`GatewayClient.connectCommandsSSE`).
-2. 도구 호출 이벤트 수신 시 (`{ inv_id, tool_name, params }`):
-   - `navigate`, `screenshot`은 background에서 직접 처리
+2. 도구 호출 이벤트 수신 시 `executeToolInvocation()` (`services/command-executor.ts`)에 위임한다:
+   - `navigate`, `screenshot`은 `lib/tab-manager.ts`에서 background에서 직접 처리
    - 나머지(`click`, `type`, `scroll`, `evaluate_js` 등)는 `browser.tabs.sendMessage()`로 AI 제어 탭의 `content.ts`에 `EXECUTE_BROWSER_COMMAND` 메시지 전달
 3. `content.ts`가 DOM 액션을 실행하고 결과를 반환한다.
 4. `background.ts`가 `GatewayClient.postToolResult()`로 `POST /sessions/{id}/browser-tools/result/{inv_id}`에 결과를 전송한다.
@@ -121,18 +121,35 @@ extension/
 │   ├── background.ts        # Service Worker (인증, 토큰 관리, commands SSE, 탭 그룹)
 │   ├── content.ts           # DOM 액션 실행기 (click, type, scroll, evaluate_js 등)
 │   ├── popup/               # 팝업 UI (사이드패널 열기 버튼)
-│   └── sidepanel/           # 채팅 UI (로그인, 메시지, 스트리밍, 브라우저 제어 배너)
+│   └── sidepanel/           # 채팅 UI
+│       ├── App.tsx          # 루트 컴포넌트 (라우팅, 인증 상태 관리)
+│       ├── hooks/
+│       │   ├── useAuthState.ts      # 로그인/로그아웃 상태 훅
+│       │   └── useBrowserControl.ts # 브라우저 제어 상태 훅
+│       └── screens/
+│           └── LoginScreen.tsx      # 로그인 화면
+├── services/
+│   └── command-executor.ts  # 도구 호출 디스패처 (navigate/screenshot vs content script)
 ├── lib/
 │   ├── api.ts               # GatewayClient (HTTP/SSE, postToolResult)
 │   ├── auth.ts              # PKCE 유틸리티 (code_verifier, code_challenge 생성)
+│   ├── browser-tool-names.ts # 도구 이름 상수 정의
 │   ├── config.ts            # 런타임 환경변수 설정
-│   └── messaging.ts         # 타입 안전 메시지 패싱 헬퍼
+│   ├── messaging.ts         # 타입 안전 메시지 패싱 헬퍼
+│   ├── sse-parser.ts        # SSE 스트림 파서 (fetch + ReadableStream 기반)
+│   ├── tab-manager.ts       # AI 탭/탭그룹 생성·관리, navigate, screenshot
+│   └── token-manager.ts     # access_token 메모리 저장, refresh_token session 저장
 ├── stores/
 │   └── chat.ts              # Zustand 채팅 + 브라우저 제어 상태 (isBrowserControlling, toolSteps, agentTabId)
-├── components/              # 공유 UI 컴포넌트 (shadcn/ui 기반)
+├── components/
+│   ├── agent/               # AgentActivityCard, AssistantMessage, StreamingSkeleton, UserMessage
+│   ├── brand/               # 브랜드 아이콘 등
+│   ├── chat/                # 채팅 입력, 메시지 목록
+│   └── layout/              # 공통 레이아웃
 ├── assets/
 │   └── tailwind.css         # Tailwind v4 CSS-first import
 ├── __tests__/
-│   └── browser-tools.test.ts # SSE 파싱, URL 구성, 메시지 포맷 테스트
+│   ├── background.test.ts   # Service Worker 로직 테스트
+│   └── content.test.ts      # content script DOM 액션 테스트
 └── wxt.config.ts            # WXT + Vite + @tailwindcss/vite 설정
 ```
