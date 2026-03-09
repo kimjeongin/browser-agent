@@ -15,8 +15,6 @@ class LLMSettings(BaseSettings):
 
 
 class CommonAgentSettings(LLMSettings):
-    """Common base for Orchestrator/ChatAgent/BrowserAgent. Provides database_url."""
+    """Common base for Orchestrator/ChatAgent/BrowserAgent. Provides redis_url for checkpointing."""
 
-    database_url: str = (
-        "postgresql+asyncpg://postgres:password@postgres:5432/browser_agent"
-    )
+    redis_url: str = "redis://localhost:6379"

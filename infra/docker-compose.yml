@@ -1,8 +1,22 @@
 services:
+  redis:
+    image: redis:8-alpine
+    container_name: browser-agent-redis
+    ports: ["6379:6379"]
+    command: redis-server --appendonly yes --loglevel warning
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: browser-agent-postgres
     ports: ["5432:5432"]
+    command: postgres -c log_min_messages=ERROR -c log_statement=none -c log_min_duration_statement=-1
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
@@ -25,7 +39,7 @@ services:
     environment:
       MINIO_ROOT_USER: minioadmin
       MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
+    command: server /data --console-address ":9001" --quiet
     volumes:
       - minio_data:/data
     healthcheck:
@@ -50,6 +64,7 @@ services:
       KC_HTTP_ENABLED: "true"
       KC_HOSTNAME_STRICT: "false"
       KC_HEALTH_ENABLED: "true"
+      KC_LOG_LEVEL: ERROR
     command: start-dev --import-realm
     volumes:
       - ./keycloak:/opt/keycloak/data/import
@@ -75,6 +90,7 @@ services:
     environment:
       - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:password@postgres:5432/phoenix
       - PHOENIX_WORKING_DIR=/mnt/data
+      - PHOENIX_LOG_LEVEL=error
     depends_on:
       postgres:
         condition: service_healthy
@@ -139,6 +155,7 @@ services:
     command:
       - "--config.file=/etc/prometheus/prometheus.yml"
       - "--storage.tsdb.retention.time=15d"
+      - "--log.level=error"
     volumes:
       - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
       - prometheus_data:/prometheus
@@ -162,6 +179,7 @@ services:
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_ADMIN_PASSWORD:-admin}
       - GF_AUTH_ANONYMOUS_ENABLED=false
+      - GF_LOG_LEVEL=error
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning
       - grafana_data:/var/lib/grafana
@@ -179,6 +197,7 @@ services:
       start_period: 20s
 
 volumes:
+  redis_data:
   postgres_data:
   minio_data:
   phoenix_data:

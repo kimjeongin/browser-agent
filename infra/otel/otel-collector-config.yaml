@@ -57,4 +57,4 @@ service:
 
   telemetry:
     logs:
-      level: warn
+      level: error
