@@ -19,7 +19,7 @@ import httpx
 from fastapi import FastAPI
 from langchain_core.messages import BaseMessage, SystemMessage
 from langchain_core.tools import tool
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import StateGraph
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
@@ -231,6 +231,12 @@ def build_chat_graph(
 # FastAPI application
 # ---------------------------------------------------------------------------
 
+_CHECKPOINT_TTL = {
+    "default_ttl": 1440,   # 24 hours in minutes
+    "refresh_on_read": True,
+}
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup: initialise LLM, tools, graph and checkpointer."""
@@ -238,13 +244,8 @@ async def lifespan(app: FastAPI):
 
     settings = ChatAgentSettings()
 
-    # AsyncPostgresSaver requires a plain postgresql:// DSN (psycopg).
-    db_url = settings.database_url.replace(
-        "postgresql+asyncpg://", "postgresql://"
-    )
-
-    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
-        await checkpointer.setup()
+    async with AsyncRedisSaver.from_conn_string(settings.redis_url, ttl=_CHECKPOINT_TTL) as checkpointer:
+        await checkpointer.asetup()
 
         llm = create_ollama_llm(settings.chat_model, settings)
         tools = [web_search, fetch_webpage]

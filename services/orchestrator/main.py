@@ -2,7 +2,6 @@
 
 import json
 import logging
-import re
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
@@ -15,7 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
 from pydantic_settings import SettingsConfigDict
@@ -220,7 +219,7 @@ def build_supervisor_graph(
     llm: BaseChatModel,
     chat_client: ACPClient,
     browser_client: ACPClient,
-    checkpointer: AsyncPostgresSaver,
+    checkpointer: Any,
 ) -> Any:
     """Construct the compiled LangGraph supervisor graph."""
     builder = StateGraph(SupervisorState)
@@ -242,8 +241,10 @@ def build_supervisor_graph(
 # ---------------------------------------------------------------------------
 
 
-def _psycopg_connection_string(database_url: str) -> str:
-    return re.sub(r"^postgresql\+asyncpg://", "postgresql://", database_url)
+_CHECKPOINT_TTL = {
+    "default_ttl": 1440,   # 24 hours in minutes
+    "refresh_on_read": True,
+}
 
 
 @asynccontextmanager
@@ -251,10 +252,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan: initialise LLM, clients, and the graph."""
     tp, lp = setup_telemetry("orchestrator", app)
 
-    conn_string = _psycopg_connection_string(settings.database_url)
-
-    async with AsyncPostgresSaver.from_conn_string(conn_string) as checkpointer:
-        await checkpointer.setup()
+    async with AsyncRedisSaver.from_conn_string(settings.redis_url, ttl=_CHECKPOINT_TTL) as checkpointer:
+        await checkpointer.asetup()
 
         llm = create_ollama_llm(
             model=settings.orchestrator_model,

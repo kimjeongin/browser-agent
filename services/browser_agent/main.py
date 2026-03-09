@@ -8,7 +8,7 @@ from typing import Any
 
 import httpx
 from fastapi import FastAPI, Request
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 
 from settings import BrowserAgentSettings
 from tools.gateway_client import initialize_client, cleanup
@@ -27,12 +27,6 @@ async def lifespan(app: FastAPI):
     tp, lp = setup_telemetry("browser-agent", app)
 
     agent_settings = BrowserAgentSettings()
-
-    # AsyncPostgresSaver requires a plain postgresql:// DSN (psycopg).
-    db_url = agent_settings.database_url.replace(
-        "postgresql+asyncpg://", "postgresql://"
-    )
-
     app.state.settings = agent_settings
 
     # Initialise Gateway client (singleton, reused across requests)
@@ -49,8 +43,13 @@ async def lifespan(app: FastAPI):
     # Planner/progress-check/replan use lighter model for speed
     planner_llm = create_ollama_llm(agent_settings.planner_model, agent_settings)
 
-    async with AsyncPostgresSaver.from_conn_string(db_url) as checkpointer:
-        await checkpointer.setup()
+    _checkpoint_ttl = {
+        "default_ttl": 1440,   # 24 hours in minutes
+        "refresh_on_read": True,
+    }
+
+    async with AsyncRedisSaver.from_conn_string(agent_settings.redis_url, ttl=_checkpoint_ttl) as checkpointer:
+        await checkpointer.asetup()
 
         app.state.graph = build_browser_graph(
             llm_with_tools, planner_llm, BROWSER_TOOLS, checkpointer
