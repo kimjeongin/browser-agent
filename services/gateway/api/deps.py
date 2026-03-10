@@ -6,7 +6,7 @@ from fastapi import Depends, HTTPException, Request, status
 
 from core.session_store import SessionStore
 from core.invocation_broker import InvocationBroker
-from shared.acp.client import ACPClient
+from acp_sdk.client import Client
 from shared.auth.dependencies import get_current_user
 from shared.models.session import Session
 
@@ -21,7 +21,7 @@ def get_broker(request: Request) -> InvocationBroker:
     return request.app.state.broker
 
 
-def get_acp(request: Request) -> ACPClient:
+def get_acp(request: Request) -> Client:
     return request.app.state.acp
 
 

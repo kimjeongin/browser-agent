@@ -50,7 +50,7 @@ services:
       retries: 3
 
   keycloak:
-    image: quay.io/keycloak/keycloak:26.5.3
+    image: quay.io/keycloak/keycloak:26.5.5
     container_name: browser-agent-keycloak
     ports: ["8080:8080"]
     environment:
@@ -60,12 +60,17 @@ services:
       KC_DB_URL: jdbc:postgresql://postgres:5432/keycloak
       KC_DB_USERNAME: postgres
       KC_DB_PASSWORD: password
-      KC_HOSTNAME: localhost
-      KC_HTTP_ENABLED: "true"
-      KC_HOSTNAME_STRICT: "false"
-      KC_HEALTH_ENABLED: "true"
-      KC_LOG_LEVEL: ERROR
-    command: start-dev --import-realm
+      # Keycloak 26.x: hostname without protocol defaults to https://.
+      # Provide the full URL so HTTP is used.
+      KC_HOSTNAME: "http://localhost:8080"
+      KC_HOSTNAME_STRICT_HTTPS: false
+      KC_HTTP_ENABLED: true
+      KC_HOSTNAME_STRICT: false
+      KC_HEALTH_ENABLED: true
+      KC_LOG_LEVEL: INFO
+      KC_PROXY_PROTOCOL: "none"
+    # start-dev ignores KC_LOG_LEVEL for some loggers; override via CLI flag too.
+    command: start-dev --import-realm 
     volumes:
       - ./keycloak:/opt/keycloak/data/import
     depends_on:
@@ -90,7 +95,9 @@ services:
     environment:
       - PHOENIX_SQL_DATABASE_URL=postgresql://postgres:password@postgres:5432/phoenix
       - PHOENIX_WORKING_DIR=/mnt/data
-      - PHOENIX_LOG_LEVEL=error
+      - PHOENIX_LOGGING_LEVEL=ERROR
+      - PHOENIX_DB_LOGGING_LEVEL=error
+      - PHOENIX_ACCESS_LOG=false
     depends_on:
       postgres:
         condition: service_healthy
@@ -108,7 +115,7 @@ services:
   loki:
     image: grafana/loki:3.3.2
     container_name: browser-agent-loki
-    command: ["-config.file=/etc/loki/config.yaml"]
+    command: ["-config.file=/etc/loki/config.yaml", "-log.level=error"]
     volumes:
       - ./loki/loki-config.yaml:/etc/loki/config.yaml
       - loki_data:/loki
@@ -125,7 +132,7 @@ services:
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.147.0
     container_name: browser-agent-otel-collector
-    command: ["--config=/etc/otel/config.yaml"]
+    command: ["--config=/etc/otel/config.yaml", "--set=service::telemetry::logs::level=error"]
     volumes:
       - ./otel/otel-collector-config.yaml:/etc/otel/config.yaml
     ports:
