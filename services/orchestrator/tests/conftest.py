@@ -1,16 +1,19 @@
 """Shared pytest fixtures for Orchestrator tests.
 
-NOTE: httpx's ASGITransport does not trigger the FastAPI lifespan, so app.state
-must be manually initialised in fixtures. We mock the LLM and ACP clients to
-avoid any real network or database connections.
+NOTE: httpx's ASGITransport does not trigger the FastAPI lifespan, so module-level
+state must be manually set in fixtures. We mock the LLM and acp_sdk Clients to
+avoid any real network connections.
 """
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock
 
 import pytest
 from httpx import ASGITransport, AsyncClient
 from langchain_core.messages import AIMessage
 
+from acp_sdk.models import MessagePart, MessagePartEvent
+
+import main as orchestrator_main
 from main import app
 
 
@@ -24,50 +27,46 @@ def mock_llm():
     return llm
 
 
+def _make_message_part_event(content: str, content_type: str = "text/plain") -> MessagePartEvent:
+    return MessagePartEvent(part=MessagePart(content=content, content_type=content_type))
+
+
 @pytest.fixture
 def mock_chat_client():
-    """Mock ACPClient for the chat agent."""
+    """Mock acp_sdk Client for the chat agent."""
     client = AsyncMock()
-    client.run = AsyncMock(
-        return_value={
-            "run_id": "run-001",
-            "status": "completed",
-            "output": {
-                "messages": [{"role": "ai", "content": "Hello from chat agent!"}],
-            },
-        },
-    )
+
+    async def fake_run_stream(input, *, agent):
+        yield _make_message_part_event("Hello from chat agent!")
+
+    client.run_stream = fake_run_stream
     return client
 
 
 @pytest.fixture
 def mock_browser_client():
-    """Mock ACPClient for the browser agent."""
+    """Mock acp_sdk Client for the browser agent."""
     client = AsyncMock()
-    client.run = AsyncMock(
-        return_value={
-            "run_id": "run-002",
-            "status": "completed",
-            "output": {
-                "messages": [{"role": "ai", "content": "Browser action completed."}],
-            },
-        },
-    )
+
+    async def fake_run_stream(input, *, agent):
+        yield _make_message_part_event("Browser action completed.")
+
+    client.run_stream = fake_run_stream
     return client
 
 
 @pytest.fixture
-async def orchestrator_client():
-    """AsyncClient backed by the real ASGI app, with app.state manually set up.
-
-    Because ASGITransport does not emit lifespan events, we initialise
-    app.state directly instead of relying on the lifespan context manager.
-    """
-    app.state.graph = MagicMock()
+async def orchestrator_client(mock_llm, mock_chat_client, mock_browser_client):
+    """AsyncClient backed by the real ASGI app, with module state mocked."""
+    orchestrator_main._llm = mock_llm
+    orchestrator_main._chat_client = mock_chat_client
+    orchestrator_main._browser_client = mock_browser_client
 
     async with AsyncClient(
         transport=ASGITransport(app=app), base_url="http://test"
     ) as client:
         yield client
 
-    app.state._state.pop("graph", None)
+    orchestrator_main._llm = None
+    orchestrator_main._chat_client = None
+    orchestrator_main._browser_client = None

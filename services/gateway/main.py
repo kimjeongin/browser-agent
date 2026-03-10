@@ -19,7 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from core.session_store import SessionStore
 from core.invocation_broker import InvocationBroker
 from settings import Settings
-from shared.acp.client import ACPClient
+from acp_sdk.client import Client
 from shared.auth.jwt_verifier import KeycloakJWTVerifier
 from shared.observability import setup_telemetry, shutdown_telemetry
 
@@ -41,13 +41,16 @@ async def lifespan(app: FastAPI):
         audience=s.keycloak_audience,
         jwks_url=s.keycloak_jwks_url or None,
     )
-    app.state.acp = ACPClient(base_url=s.orchestrator_url)
+    acp_client = Client(base_url=s.orchestrator_url, timeout=120.0, headers={"Content-Type": "application/json"})
+    await acp_client.__aenter__()
+    app.state.acp = acp_client
 
     cleanup_task = asyncio.create_task(app.state.broker.run_stale_cleanup())
     logger.info("Gateway started [orchestrator=%s]", s.orchestrator_url)
 
     yield
 
+    await acp_client.__aexit__(None, None, None)
     cleanup_task.cancel()
     try:
         await cleanup_task

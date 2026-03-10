@@ -1,14 +1,15 @@
-"""Chat Agent -- FastAPI + LangGraph ReAct agent with web search tools.
+"""Chat Agent -- acp_sdk Server wrapping a LangGraph ReAct agent.
 
-Exposes ACP endpoints (/runs, /runs/stream, /health) for the orchestrator
-to invoke. Uses DuckDuckGo search and webpage fetching as tools so the LLM
-can answer questions that require up-to-date information.
+Exposes ACP agent endpoints via acp_sdk's create_app. Uses DuckDuckGo search
+and webpage fetching as tools so the LLM can answer questions that require
+up-to-date information.
 """
 
 from __future__ import annotations
 
 import html
 import ipaddress
+import json
 import logging
 import re
 from contextlib import asynccontextmanager
@@ -16,8 +17,17 @@ from typing import Annotated, Any
 from urllib.parse import quote_plus, urlparse
 
 import httpx
-from fastapi import FastAPI
-from langchain_core.messages import BaseMessage, SystemMessage
+
+# acp_sdk 1.0.3 references uvicorn.config.LoopSetupType which was removed
+# in uvicorn >= 0.34. Patch it before importing acp_sdk.server.
+import uvicorn.config as _uvicorn_config
+
+if not hasattr(_uvicorn_config, "LoopSetupType"):
+    _uvicorn_config.LoopSetupType = str
+
+from acp_sdk.models import Message, MessagePart
+from acp_sdk.server import Context, agent, create_app
+from langchain_core.messages import AIMessage, BaseMessage, SystemMessage
 from langchain_core.tools import tool
 from langgraph.checkpoint.redis.aio import AsyncRedisSaver
 from langgraph.graph import StateGraph
@@ -26,7 +36,6 @@ from langgraph.prebuilt import ToolNode, tools_condition
 from pydantic_settings import SettingsConfigDict
 from typing_extensions import TypedDict
 
-from shared.acp import create_acp_router
 from shared.llm import CommonAgentSettings, LLMSettings, create_ollama_llm
 from shared.observability import setup_telemetry, shutdown_telemetry
 
@@ -35,6 +44,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 # Settings
 # ---------------------------------------------------------------------------
+
 
 class ChatAgentSettings(CommonAgentSettings):
     """Environment-driven configuration for the Chat Agent."""
@@ -116,8 +126,6 @@ async def web_search(query: str, max_results: int = 5) -> list[dict[str, str]]:
     body = response.text
     results: list[dict[str, str]] = []
 
-    # DuckDuckGo Lite returns results in <a class="result-link"> or table rows.
-    # We parse with simple regex to avoid heavy HTML parser dependency.
     link_pattern = re.compile(
         r'<a[^>]+rel="nofollow"[^>]+href="([^"]+)"[^>]*>(.*?)</a>',
         re.S,
@@ -170,7 +178,6 @@ async def fetch_webpage(url: str, max_chars: int = 8000) -> dict[str, str]:
 
     body = response.text
 
-    # Extract <title>
     title_match = re.search(r"<title[^>]*>(.*?)</title>", body, re.S | re.I)
     title = _extract_text(title_match.group(1)) if title_match else ""
 
@@ -203,16 +210,11 @@ def build_chat_graph(
     tools: list,
     checkpointer: Any,
 ) -> Any:
-    """Compile a ReAct-style LangGraph for the chat agent.
-
-    The graph alternates between the LLM node and the tool-execution node,
-    using ``tools_condition`` to decide whether to loop or finish.
-    """
+    """Compile a ReAct-style LangGraph for the chat agent."""
     builder = StateGraph(AgentState)
 
     async def call_model(state: AgentState) -> dict[str, Any]:
         messages = state["messages"]
-        # Inject the system prompt if it is not already present.
         if not messages or not isinstance(messages[0], SystemMessage):
             messages = [SystemMessage(content=SYSTEM_PROMPT), *messages]
         response = await llm_with_tools.ainvoke(messages)
@@ -228,20 +230,92 @@ def build_chat_graph(
 
 
 # ---------------------------------------------------------------------------
-# FastAPI application
+# ACP agent definition
 # ---------------------------------------------------------------------------
 
+# Module-level state (initialized in lifespan)
+_graph = None
+
 _CHECKPOINT_TTL = {
-    "default_ttl": 1440,   # 24 hours in minutes
+    "default_ttl": 1440,
     "refresh_on_read": True,
 }
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Startup: initialise LLM, tools, graph and checkpointer."""
-    tp, lp = setup_telemetry("chat-agent", app)
+def _extract_session_id(input: list[Message]) -> str:
+    for msg in input:
+        for part in msg.parts:
+            if part.content_type == "text/x-session-id" and part.content:
+                return part.content
+    return "default"
 
+
+def _extract_user_text(input: list[Message]) -> str:
+    texts = []
+    for msg in input:
+        for part in msg.parts:
+            if part.content_type == "text/plain" and part.content:
+                texts.append(part.content)
+    return "\n".join(texts)
+
+
+@agent(name="chat_agent", description="Chat agent with web search and webpage fetching capabilities")
+async def chat_agent_fn(input: list[Message], context: Context):
+    """Processes user queries using web search when needed."""
+    from langchain_core.messages import HumanMessage
+
+    session_id = _extract_session_id(input)
+    user_text = _extract_user_text(input)
+
+    graph_input = {"messages": [HumanMessage(content=user_text)]}
+    config = {
+        "configurable": {"thread_id": session_id},
+        "recursion_limit": 25,
+    }
+
+    tokens_emitted = False
+    last_ai_content = ""
+
+    async for event in _graph.astream_events(graph_input, config, version="v2"):
+        kind = event.get("event", "")
+
+        if kind == "on_chat_model_stream":
+            chunk = event.get("data", {}).get("chunk", "")
+            text = chunk.content if hasattr(chunk, "content") else str(chunk)
+            if text:
+                tokens_emitted = True
+                yield MessagePart(content=text, content_type="text/plain")
+
+        elif kind == "on_chain_end":
+            output = event.get("data", {}).get("output", {})
+            if isinstance(output, dict):
+                msgs = output.get("messages", [])
+                if msgs and isinstance(msgs[-1], AIMessage):
+                    text = msgs[-1].content if isinstance(msgs[-1].content, str) else ""
+                    if text:
+                        last_ai_content = text
+
+        elif kind == "on_tool_start":
+            tool_data = json.dumps({"type": "tool_start", "name": event.get("name", "")})
+            yield MessagePart(content=tool_data, content_type="application/x-tool-event")
+
+        elif kind == "on_tool_end":
+            tool_data = json.dumps({"type": "tool_end", "name": event.get("name", "")})
+            yield MessagePart(content=tool_data, content_type="application/x-tool-event")
+
+    if not tokens_emitted and last_ai_content:
+        yield MessagePart(content=last_ai_content, content_type="text/plain")
+
+
+# ---------------------------------------------------------------------------
+# Lifespan & application
+# ---------------------------------------------------------------------------
+
+
+@asynccontextmanager
+async def lifespan(app):
+    global _graph
+    tp, lp = setup_telemetry("chat-agent", app)
     settings = ChatAgentSettings()
 
     async with AsyncRedisSaver.from_conn_string(settings.redis_url, ttl=_CHECKPOINT_TTL) as checkpointer:
@@ -251,7 +325,7 @@ async def lifespan(app: FastAPI):
         tools = [web_search, fetch_webpage]
         llm_with_tools = llm.bind_tools(tools)
 
-        app.state.graph = build_chat_graph(llm_with_tools, tools, checkpointer)
+        _graph = build_chat_graph(llm_with_tools, tools, checkpointer)
         logger.info(
             "Chat Agent ready -- model=%s, tools=%s",
             settings.chat_model,
@@ -262,7 +336,7 @@ async def lifespan(app: FastAPI):
     shutdown_telemetry(tp, lp)
 
 
-app = FastAPI(title="Chat Agent", version="0.1.0", lifespan=lifespan)
+app = create_app(chat_agent_fn, lifespan=lifespan)
 
 
 @app.get("/health")
@@ -282,8 +356,3 @@ async def health() -> dict[str, Any]:
         "service": "chat-agent",
         "ollama": "ok" if ollama_ok else "unavailable",
     }
-
-
-# ACP endpoints: /runs, /runs/stream
-router = create_acp_router(lambda request: request.app.state.graph)
-app.include_router(router)
