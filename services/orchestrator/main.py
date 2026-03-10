@@ -1,5 +1,6 @@
-"""Orchestrator service -- acp_sdk agent that routes to sub-agents."""
+"""Orchestrator service -- ACP agent backed by a LangGraph ReAct supervisor."""
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import Any
@@ -16,17 +17,19 @@ if not hasattr(_uvicorn_config, "LoopSetupType"):
 from acp_sdk.client import Client
 from acp_sdk.models import Message, MessagePart, MessagePartEvent
 from acp_sdk.server import Context, agent, create_app
-from langchain_core.messages import HumanMessage, SystemMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from pydantic_settings import SettingsConfigDict
 
-from classifier import CLASSIFICATION_SYSTEM_PROMPT, parse_agent_from_response
+from graph.builder import build_orchestrator_graph
 from shared.llm import CommonAgentSettings, create_ollama_llm
 from shared.observability import setup_telemetry, shutdown_telemetry
+from tools import passthrough
+from tools.browser_agent import browser_agent as browser_agent_tool
+from tools.browser_agent import init_browser_client
+from tools.chat_agent import chat_agent as chat_agent_tool
+from tools.chat_agent import init_chat_client
 
 logger = logging.getLogger(__name__)
-
-CHAT_AGENT = "chat_agent"
-BROWSER_AGENT = "browser_agent"
 
 
 class OrchestratorSettings(CommonAgentSettings):
@@ -36,9 +39,7 @@ class OrchestratorSettings(CommonAgentSettings):
 
 
 # Module-level state (initialized in lifespan)
-_llm = None
-_chat_client: Client | None = None
-_browser_client: Client | None = None
+_graph = None
 _settings: OrchestratorSettings | None = None
 
 
@@ -59,64 +60,111 @@ def _extract_user_text(input: list[Message]) -> str:
     return "\n".join(texts)
 
 
-async def _classify_intent(user_message: str) -> str:
-    """Classify a user message and return the target agent name."""
-    msgs = [
-        SystemMessage(content=CLASSIFICATION_SYSTEM_PROMPT),
-        HumanMessage(content=user_message),
-    ]
-    response = await _llm.ainvoke(msgs)
-    response_text = response.content if isinstance(response.content, str) else str(response.content)
-    return parse_agent_from_response(response_text)
-
-
-@agent(name="orchestrator", description="Routes user requests to the appropriate specialist agent")
+@agent(name="orchestrator", description="Routes user requests to specialist agents")
 async def orchestrator_agent(input: list[Message], context: Context):
-    """Classifies intent and routes to chat_agent or browser_agent."""
+    """Run the LangGraph supervisor graph and stream results via pass-through queue."""
+    session_id = _extract_session_id(input)
     user_text = _extract_user_text(input)
 
-    intent = CHAT_AGENT
-    if user_text:
+    combined_q: asyncio.Queue[MessagePart | None] = asyncio.Queue()
+    passthrough.register(session_id, combined_q)
+
+    async def run_graph():
+        """Execute the supervisor graph; push sentinel when done."""
+        graph_input = {
+            "messages": [HumanMessage(content=user_text)],
+            "session_id": session_id,
+        }
         try:
-            intent = await _classify_intent(user_text)
+            direct_answer_parts: list[str] = []
+
+            async for event in _graph.astream_events(
+                graph_input, {"recursion_limit": 10}, version="v2"
+            ):
+                kind = event.get("event", "")
+
+                if kind == "on_chat_model_stream":
+                    # Capture streaming tokens from the supervisor node
+                    node = event.get("metadata", {}).get("langgraph_node", "")
+                    if node == "supervisor":
+                        chunk = event.get("data", {}).get("chunk", "")
+                        text = chunk.content if hasattr(chunk, "content") else ""
+                        if text:
+                            direct_answer_parts.append(text)
+
+                elif kind == "on_chain_end":
+                    # Detect when supervisor responds directly (no tool calls)
+                    output = event.get("data", {}).get("output", {})
+                    if isinstance(output, dict):
+                        msgs = output.get("messages", [])
+                        if msgs and isinstance(msgs[-1], AIMessage):
+                            last = msgs[-1]
+                            if not last.tool_calls and last.content:
+                                await combined_q.put(
+                                    MessagePart(
+                                        content=last.content,
+                                        content_type="text/plain",
+                                    )
+                                )
+                                direct_answer_parts.clear()
+
         except Exception:
-            logger.exception("Classification failed, defaulting to %s", CHAT_AGENT)
+            logger.exception("Orchestrator graph error")
+        finally:
+            if direct_answer_parts:
+                await combined_q.put(
+                    MessagePart(
+                        content="".join(direct_answer_parts),
+                        content_type="text/plain",
+                    )
+                )
+            await combined_q.put(None)  # sentinel
 
-    logger.info("Orchestrator routing to '%s' for: %.80s", intent, user_text)
-
-    if intent == BROWSER_AGENT:
-        client = _browser_client
-        agent_name = BROWSER_AGENT
-    else:
-        client = _chat_client
-        agent_name = CHAT_AGENT
-
-    async for event in client.run_stream(input=input, agent=agent_name):
-        if isinstance(event, MessagePartEvent):
-            yield event.part
+    graph_task = asyncio.create_task(run_graph())
+    try:
+        while True:
+            part = await combined_q.get()
+            if part is None:
+                break
+            yield part
+    finally:
+        passthrough.unregister(session_id)
+        if not graph_task.done():
+            graph_task.cancel()
 
 
 @asynccontextmanager
 async def lifespan(app):
-    global _llm, _chat_client, _browser_client, _settings
+    global _graph, _settings
     tp, lp = setup_telemetry("orchestrator", app)
 
     settings = OrchestratorSettings()
     _settings = settings
 
-    _llm = create_ollama_llm(
+    llm = create_ollama_llm(
         model=settings.orchestrator_model,
         settings=settings,
-        streaming=False,
+        streaming=True,
     )
 
     _acp_headers = {"Content-Type": "application/json"}
     async with (
-        Client(base_url=settings.chat_agent_url, timeout=120.0, headers=_acp_headers) as chat_client,
-        Client(base_url=settings.browser_agent_url, timeout=120.0, headers=_acp_headers) as browser_client,
+        Client(
+            base_url=settings.chat_agent_url,
+            timeout=120.0,
+            headers=_acp_headers,
+        ) as chat_client,
+        Client(
+            base_url=settings.browser_agent_url,
+            timeout=120.0,
+            headers=_acp_headers,
+        ) as browser_client,
     ):
-        _chat_client = chat_client
-        _browser_client = browser_client
+        init_chat_client(chat_client)
+        init_browser_client(browser_client)
+
+        tools = [browser_agent_tool, chat_agent_tool]
+        _graph = build_orchestrator_graph(llm, tools)
 
         logger.info(
             "Orchestrator ready (chat=%s, browser=%s)",
@@ -125,8 +173,7 @@ async def lifespan(app):
         )
         yield
 
-    _chat_client = None
-    _browser_client = None
+    _graph = None
     shutdown_telemetry(tp, lp)
 
 
