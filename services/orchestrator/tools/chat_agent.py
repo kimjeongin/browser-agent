@@ -43,5 +43,6 @@ async def chat_agent(task: str, session_id: str) -> str:
                 collected.append(event.part.content)
                 if q:
                     await q.put(event.part)
+                    passthrough.mark_text_streamed(session_id)
 
     return "".join(collected) or "(no output)"

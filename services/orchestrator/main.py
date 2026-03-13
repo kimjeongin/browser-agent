@@ -75,46 +75,48 @@ async def orchestrator_agent(input: list[Message], context: Context):
             "messages": [HumanMessage(content=user_text)],
             "session_id": session_id,
         }
-        try:
-            direct_answer_parts: list[str] = []
+        # Holds the supervisor's latest direct-answer text (no tool calls).
+        # on_chain_end fires at multiple hierarchy levels for the same message,
+        # so we keep overwriting and emit exactly once in finally.
+        final_supervisor_text: str = ""
 
+        try:
             async for event in _graph.astream_events(
                 graph_input, {"recursion_limit": 10}, version="v2"
             ):
                 kind = event.get("event", "")
+                node = event.get("metadata", {}).get("langgraph_node", "")
 
-                if kind == "on_chat_model_stream":
-                    # Capture streaming tokens from the supervisor node
-                    node = event.get("metadata", {}).get("langgraph_node", "")
-                    if node == "supervisor":
-                        chunk = event.get("data", {}).get("chunk", "")
-                        text = chunk.content if hasattr(chunk, "content") else ""
-                        if text:
-                            direct_answer_parts.append(text)
-
-                elif kind == "on_chain_end":
-                    # Detect when supervisor responds directly (no tool calls)
+                if kind == "on_chain_end" and node == "supervisor":
                     output = event.get("data", {}).get("output", {})
                     if isinstance(output, dict):
                         msgs = output.get("messages", [])
                         if msgs and isinstance(msgs[-1], AIMessage):
                             last = msgs[-1]
-                            if not last.tool_calls and last.content:
-                                await combined_q.put(
-                                    MessagePart(
-                                        content=last.content,
-                                        content_type="text/plain",
-                                    )
+                            if last.tool_calls:
+                                # Intermediate supervisor turn — reset so we
+                                # don't accidentally carry stale text forward.
+                                final_supervisor_text = ""
+                            elif last.content:
+                                # Final turn: supervisor answered directly.
+                                # Overwrite (may fire >1x for same message).
+                                final_supervisor_text = (
+                                    last.content
+                                    if isinstance(last.content, str)
+                                    else str(last.content)
                                 )
-                                direct_answer_parts.clear()
 
         except Exception:
             logger.exception("Orchestrator graph error")
         finally:
-            if direct_answer_parts:
+            # Emit the supervisor's direct answer only when no sub-agent
+            # already streamed text (e.g. chat_agent via passthrough).
+            # This prevents the duplicate-response bug where chat_agent
+            # streams tokens AND the supervisor relays the same content.
+            if final_supervisor_text and not passthrough.was_text_streamed(session_id):
                 await combined_q.put(
                     MessagePart(
-                        content="".join(direct_answer_parts),
+                        content=final_supervisor_text,
                         content_type="text/plain",
                     )
                 )

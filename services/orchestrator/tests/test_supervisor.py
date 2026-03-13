@@ -118,6 +118,7 @@ class TestPassthrough:
     def setup_method(self):
         from tools import passthrough
         passthrough._queues.clear()
+        passthrough._text_streamed.clear()
 
     async def test_register_and_get(self):
         from tools import passthrough
@@ -139,6 +140,19 @@ class TestPassthrough:
     async def test_unregister_nonexistent_is_noop(self):
         from tools import passthrough
         passthrough.unregister("ghost")  # must not raise
+
+    async def test_mark_and_check_text_streamed(self):
+        from tools import passthrough
+        assert not passthrough.was_text_streamed("s-stream")
+        passthrough.mark_text_streamed("s-stream")
+        assert passthrough.was_text_streamed("s-stream")
+
+    async def test_unregister_clears_text_streamed_flag(self):
+        from tools import passthrough
+        passthrough.register("s-clear", asyncio.Queue())
+        passthrough.mark_text_streamed("s-clear")
+        passthrough.unregister("s-clear")
+        assert not passthrough.was_text_streamed("s-clear")
 
 
 # ---------------------------------------------------------------------------
@@ -242,6 +256,7 @@ class TestChatAgentTool:
     def setup_method(self):
         from tools import passthrough
         passthrough._queues.clear()
+        passthrough._text_streamed.clear()
 
     def _get_module(self):
         import tools.chat_agent  # noqa: F401
@@ -282,6 +297,8 @@ class TestChatAgentTool:
         assert len(parts) == 2
         assert all(p.content_type == "text/plain" for p in parts)
         assert parts[0].content == "Summary: "
+        # Streaming text must set the flag so main.py suppresses supervisor relay
+        assert passthrough.was_text_streamed("s-chat2")
 
     async def test_returns_fallback_when_no_text(self):
         ca = self._get_module()
