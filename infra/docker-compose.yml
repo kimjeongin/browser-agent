@@ -12,6 +12,18 @@ services:
       timeout: 3s
       retries: 5
 
+  redis-exporter:
+    image: oliver006/redis_exporter:v1.67.0
+    container_name: browser-agent-redis-exporter
+    environment:
+      REDIS_ADDR: redis://redis:6379
+    expose:
+      - "9121"
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   postgres:
     image: pgvector/pgvector:pg16
     container_name: browser-agent-postgres
