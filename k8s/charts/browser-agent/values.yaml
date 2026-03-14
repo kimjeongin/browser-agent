@@ -1,0 +1,208 @@
+# ============================================================
+# Browser Agent — Application Chart Values
+# ============================================================
+# All services run in the browser-agent namespace with
+# Istio sidecar injection enabled.  JWT validation is handled
+# by Istio RequestAuthentication; application-level JWT checks
+# are kept as a defence-in-depth fallback.
+
+global:
+  namespace: browser-agent
+  # Registry prefix.  For Minikube with local images this is empty.
+  imageRegistry: ""
+  # Image pull policy.  Use "Never" for locally-loaded Minikube images.
+  imagePullPolicy: IfNotPresent
+
+  # Cross-cutting environment variables injected into all app services.
+  otelEndpoint: "http://otel-collector.browser-agent-observability.svc.cluster.local:4318"
+  redisUrl: "redis://redis.browser-agent-infra.svc.cluster.local:6379"
+
+  # Host alias to reach Ollama running on the Minikube host.
+  # Populated by setup-minikube.sh using $(minikube ssh "ip route | awk '/default/ {print $3}'")
+  ollamaHostIP: "192.168.49.1"  # default for minikube; override with actual host IP
+
+# -----------------------------------------------------------
+# Gateway
+# -----------------------------------------------------------
+gateway:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: browser-agent/gateway
+    tag: latest
+    # Use Never so Minikube uses the locally-loaded image.
+    pullPolicy: Never
+
+  service:
+    port: 8000
+
+  env:
+    orchestratorUrl: "http://orchestrator:8001"
+    # iss claim in JWTs is set by Keycloak based on the URL the browser used
+    # (localhost:8080), so realm_url must match that for issuer validation.
+    keycloakRealmUrl: "http://localhost:8080/realms/browser-agent"
+    # jwksUri uses host IP so pods can reach docker-compose Keycloak.
+    keycloakJwksUrl: "http://192.168.49.1:8080/realms/browser-agent/protocol/openid-connect/certs"
+    keycloakAudience: "browser-agent-extension"
+    sessionTtl: "86400"
+    browserToolTimeout: "60"
+    corsOrigins: "*"
+    environment: "production"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+# -----------------------------------------------------------
+# Orchestrator
+# -----------------------------------------------------------
+orchestrator:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: browser-agent/orchestrator
+    tag: latest
+    pullPolicy: Never
+
+  service:
+    port: 8001
+
+  env:
+    orchestratorModel: "qwen3:8b"
+    chatAgentUrl: "http://chat-agent:8002"
+    browserAgentUrl: "http://browser-agent-svc:8003"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+# -----------------------------------------------------------
+# Chat Agent
+# -----------------------------------------------------------
+chatAgent:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: browser-agent/chat-agent
+    tag: latest
+    pullPolicy: Never
+
+  service:
+    port: 8002
+
+  env:
+    chatModel: "qwen3:8b"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+# -----------------------------------------------------------
+# Browser Agent
+# -----------------------------------------------------------
+browserAgent:
+  enabled: true
+  replicaCount: 1
+
+  image:
+    repository: browser-agent/browser-agent
+    tag: latest
+    pullPolicy: Never
+
+  service:
+    port: 8003
+
+  env:
+    browserModel: "qwen2.5vl:7b"
+    plannerModel: "qwen3:8b"
+    gatewayUrl: "http://gateway:8000"
+    browserToolTimeout: "65"
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 3
+    targetCPUUtilizationPercentage: 80
+
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+
+# -----------------------------------------------------------
+# Istio Auth Tester (ealen/echo-server)
+# A lightweight echo server that reflects all request headers
+# as JSON.  Used to verify that Istio JWT authentication is
+# working correctly end-to-end without hitting real services.
+# Route: /auth-test/* → auth-tester:80
+# -----------------------------------------------------------
+authTester:
+  enabled: true
+
+  image:
+    repository: ealen/echo-server
+    tag: "0.9.2"
+    pullPolicy: IfNotPresent
+
+  service:
+    port: 80
+
+  resources:
+    requests:
+      cpu: 10m
+      memory: 16Mi
+    limits:
+      cpu: 50m
+      memory: 32Mi
