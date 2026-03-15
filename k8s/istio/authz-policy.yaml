@@ -1,0 +1,117 @@
+# AuthorizationPolicy — controls which requests are allowed into the Gateway.
+#
+# Design:
+#   1. Allow all requests to /health (liveness/readiness probes, Istio health).
+#   2. Allow POST /sessions (unauthenticated session creation — the app issues
+#      a short-lived session token after Keycloak validation internally).
+#   3. Require a valid JWT principal for all other /sessions/* paths.
+#   4. Deny everything else by default (implicit deny).
+
+# -------------------------------------------------------------------
+# Policy 1: Allow health check endpoint — no auth required.
+# -------------------------------------------------------------------
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-health
+  namespace: browser-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            paths:
+              - "/health"
+              - "/health/*"
+---
+# Policy 2: Allow unauthenticated POST /sessions (session creation).
+# The Gateway application performs Keycloak token validation internally
+# for this endpoint as defence-in-depth.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-session-create
+  namespace: browser-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  action: ALLOW
+  rules:
+    - to:
+        - operation:
+            methods:
+              - POST
+            paths:
+              - "/sessions"
+---
+# Policy 3: Require valid JWT + status=active for all other session operations.
+# Istio populates requestPrincipal as "<issuer>/<subject>" after
+# RequestAuthentication successfully validates the token.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt-for-sessions
+  namespace: browser-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            requestPrincipals:
+              - "http://localhost:8080/realms/browser-agent/*"
+      to:
+        - operation:
+            paths:
+              - "/sessions/*"
+---
+# Policy 4: Require valid JWT + status=active for /auth-test/*.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: require-jwt-for-auth-test
+  namespace: browser-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: auth-tester
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            requestPrincipals:
+              - "http://localhost:8080/realms/browser-agent/*"
+      when:
+        - key: request.auth.claims[status]
+          values: ["active"]
+---
+# Policy 5: Allow internal service-to-service traffic (e.g., Browser Agent
+# calling Gateway's browser-tools endpoints).  These calls come from within
+# the mesh and carry mTLS identity, not JWT.
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: allow-internal-mesh
+  namespace: browser-agent
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: gateway
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            # Allow calls from any service within the browser-agent namespace
+            # (i.e., all app services with Istio sidecar).
+            namespaces:
+              - browser-agent
+      to:
+        - operation:
+            paths:
+              - "/sessions/*/browser-tools/*"
