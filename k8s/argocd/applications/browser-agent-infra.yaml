@@ -1,0 +1,58 @@
+# ArgoCD Application — Infrastructure (PostgreSQL, Redis, Keycloak, MinIO)
+# Sync policy: automated with pruning and self-healing.
+# Infrastructure is considered stable and should always match the declared state.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: browser-agent-infra
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: browser-agent
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: browser-agent
+
+  source:
+    repoURL: "https://github.com/kimjeongin/spica-browser-agent"
+    targetRevision: main
+    path: k8s/charts/infrastructure
+    helm:
+      valueFiles:
+        - values.yaml
+      # Pass the release namespace explicitly so templates render correctly.
+      releaseName: infrastructure
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: browser-agent-infra
+
+  syncPolicy:
+    # Create the target namespace if it does not exist.
+    syncOptions:
+      - CreateNamespace=true
+      # Label the namespace for Istio sidecar injection.
+      - RespectIgnoreDifferences=true
+    automated:
+      # Remove resources from the cluster that are no longer in git.
+      prune: true
+      # Revert any manual changes made outside of ArgoCD.
+      selfHeal: true
+    retry:
+      limit: 5
+      backoff:
+        duration: 10s
+        factor: 2
+        maxDuration: 3m
+
+  # Ignore differences that are expected (e.g., Kubernetes fills in defaults).
+  ignoreDifferences:
+    - group: apps
+      kind: StatefulSet
+      jsonPointers:
+        - /spec/volumeClaimTemplates/0/spec/storageClassName
+
+  # Health check overrides for custom resource types.
+  info:
+    - name: "Description"
+      value: "Infrastructure services: PostgreSQL, Redis, Keycloak, MinIO"

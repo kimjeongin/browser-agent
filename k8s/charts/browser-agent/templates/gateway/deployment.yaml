@@ -1,0 +1,92 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "gateway" "context" .) | nindent 4 }}
+spec:
+  {{- if not .Values.gateway.autoscaling.enabled }}
+  replicas: {{ .Values.gateway.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "browser-agent.selectorLabels" (dict "component" "gateway" "context" .) | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "browser-agent.componentLabels" (dict "component" "gateway" "context" .) | nindent 8 }}
+      annotations:
+        # Force pod restart on ConfigMap/Secret changes.
+        rollme: {{ randAlphaNum 5 | quote }}
+    spec:
+      # Istio sidecar injection is controlled at the namespace level via the label
+      # istio-injection=enabled; no per-pod annotation needed.
+      {{- include "browser-agent.ollamaHostAlias" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: gateway
+          image: "{{ .Values.gateway.image.repository }}:{{ .Values.gateway.image.tag }}"
+          imagePullPolicy: {{ .Values.gateway.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.gateway.service.port }}
+              protocol: TCP
+          env:
+            # Service-specific vars
+            - name: ORCHESTRATOR_URL
+              value: {{ .Values.gateway.env.orchestratorUrl | quote }}
+            - name: KEYCLOAK_REALM_URL
+              value: {{ .Values.gateway.env.keycloakRealmUrl | quote }}
+            - name: KEYCLOAK_JWKS_URL
+              value: {{ .Values.gateway.env.keycloakJwksUrl | quote }}
+            - name: KEYCLOAK_AUDIENCE
+              value: {{ .Values.gateway.env.keycloakAudience | quote }}
+            - name: SESSION_TTL
+              value: {{ .Values.gateway.env.sessionTtl | quote }}
+            - name: BROWSER_TOOL_TIMEOUT
+              value: {{ .Values.gateway.env.browserToolTimeout | quote }}
+            - name: CORS_ORIGINS
+              value: {{ .Values.gateway.env.corsOrigins | quote }}
+            - name: ENVIRONMENT
+              value: {{ .Values.gateway.env.environment | quote }}
+            # Common vars (OTel, Redis)
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.otelEndpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "gateway"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.gateway.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false  # FastAPI may need /tmp writes
+            capabilities:
+              drop:
+                - ALL
+{{- end }}

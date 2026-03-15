@@ -1,0 +1,37 @@
+Browser Agent — Application Chart installed successfully.
+
+SERVICES (all in namespace: {{ .Release.Namespace }})
+------------------------------------------------------
+{{- if .Values.gateway.enabled }}
+  Gateway       : gateway.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.gateway.service.port }}
+{{- end }}
+{{- if .Values.orchestrator.enabled }}
+  Orchestrator  : orchestrator.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.orchestrator.service.port }}
+{{- end }}
+{{- if .Values.chatAgent.enabled }}
+  Chat Agent    : chat-agent.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.chatAgent.service.port }}
+{{- end }}
+{{- if .Values.browserAgent.enabled }}
+  Browser Agent : browser-agent-svc.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.browserAgent.service.port }}
+{{- end }}
+
+ISTIO INGRESS
+-------------
+The Gateway service is exposed via Istio IngressGateway.
+To get the Minikube Ingress IP and port:
+
+  export INGRESS_HOST=$(minikube ip)
+  export INGRESS_PORT=$(kubectl get svc istio-ingressgateway \
+    -n istio-system -o jsonpath='{.spec.ports[?(@.name=="http2")].nodePort}')
+  echo "http://${INGRESS_HOST}:${INGRESS_PORT}"
+
+OLLAMA HOST ALIAS
+-----------------
+  Configured host.docker.internal -> {{ .Values.global.ollamaHostIP }}
+  Update global.ollamaHostIP if your Minikube gateway IP differs:
+    minikube ssh "ip route | awk '/default/ {print \$3}'"
+
+VERIFY
+------
+  kubectl get pods -n {{ .Release.Namespace }}
+  kubectl get vs   -n {{ .Release.Namespace }}

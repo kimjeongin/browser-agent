@@ -1,0 +1,23 @@
+{{- if and .Values.browserAgent.enabled .Values.browserAgent.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: browser-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "browser-agent" "context" .) | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: browser-agent
+  minReplicas: {{ .Values.browserAgent.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.browserAgent.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ .Values.browserAgent.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}

@@ -1,0 +1,22 @@
+# Istio Gateway — the single entry point for all external traffic.
+# Terminates at the istio-ingressgateway pod; VirtualServices handle routing.
+apiVersion: networking.istio.io/v1beta1
+kind: Gateway
+metadata:
+  name: browser-agent-gateway
+  namespace: browser-agent
+spec:
+  selector:
+    # Targets the default Istio IngressGateway installed in istio-system.
+    istio: ingressgateway
+  servers:
+    # HTTP — acceptable for Minikube local development.
+    # In production, add a TLS server block and reference a cert Secret.
+    - port:
+        number: 80
+        name: http
+        protocol: HTTP
+      hosts:
+        # Accept any host for Minikube flexibility.
+        # Tighten to a specific FQDN in production.
+        - "*"

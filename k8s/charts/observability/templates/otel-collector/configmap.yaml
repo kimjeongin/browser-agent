@@ -1,0 +1,68 @@
+{{- if .Values.otelCollector.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: otel-collector-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "observability.componentLabels" (dict "component" "otel-collector" "context" .) | nindent 4 }}
+data:
+  config.yaml: |
+    receivers:
+      otlp:
+        protocols:
+          grpc:
+            endpoint: 0.0.0.0:{{ .Values.otelCollector.service.grpcPort }}
+          http:
+            endpoint: 0.0.0.0:{{ .Values.otelCollector.service.httpPort }}
+
+    processors:
+      memory_limiter:
+        check_interval: 1s
+        limit_mib: 400
+        spike_limit_mib: 100
+      batch:
+        timeout: 1s
+        send_batch_size: 512
+
+    exporters:
+      # LLM traces -> Phoenix (OpenInference)
+      otlphttp/phoenix:
+        endpoint: http://phoenix.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.phoenix.service.port }}
+        tls:
+          insecure: true
+
+      # System logs -> Loki (OTLP native)
+      otlphttp/loki:
+        endpoint: http://loki.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.loki.service.httpPort }}/otlp
+
+      # Metrics -> Prometheus scrape endpoint
+      prometheus:
+        endpoint: 0.0.0.0:{{ .Values.otelCollector.service.metricsPort }}
+        namespace: browser_agent
+        resource_to_telemetry_conversion:
+          enabled: true
+
+    extensions:
+      health_check:
+        endpoint: 0.0.0.0:{{ .Values.otelCollector.service.healthPort }}
+
+    service:
+      extensions: [health_check]
+      pipelines:
+        traces:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlphttp/phoenix]
+        logs:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [otlphttp/loki]
+        metrics:
+          receivers: [otlp]
+          processors: [memory_limiter, batch]
+          exporters: [prometheus]
+      telemetry:
+        logs:
+          level: error
+{{- end }}

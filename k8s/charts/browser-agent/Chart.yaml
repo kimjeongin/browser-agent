@@ -1,0 +1,26 @@
+apiVersion: v2
+name: browser-agent
+description: >
+  Browser Agent application chart — Gateway, Orchestrator, Chat Agent, and Browser Agent
+  FastAPI services deployed with Istio sidecar injection enabled.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/kimjeongin/spica-browser-agent
+sources:
+  - https://github.com/kimjeongin/spica-browser-agent
+maintainers:
+  - name: kimjeongin
+    email: jeongin@spica.im
+keywords:
+  - browser-agent
+  - gateway
+  - orchestrator
+  - langgraph
+  - ai-agent
+annotations:
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial browser-agent application chart release
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/prerelease: "false"

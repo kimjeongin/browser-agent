@@ -1,0 +1,38 @@
+{{- if .Values.postgresql.enabled }}
+# ClusterIP Service — used by application services and Keycloak.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "postgresql" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: postgres
+      port: {{ .Values.postgresql.service.port }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "infrastructure.selectorLabels" (dict "component" "postgresql" "context" .) | nindent 4 }}
+---
+# Headless Service required by the StatefulSet for stable DNS entries.
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgresql-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "postgresql" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: postgres
+      port: {{ .Values.postgresql.service.port }}
+      targetPort: postgres
+      protocol: TCP
+  selector:
+    {{- include "infrastructure.selectorLabels" (dict "component" "postgresql" "context" .) | nindent 4 }}
+{{- end }}

@@ -1,0 +1,40 @@
+{{- if .Values.loki.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "observability.componentLabels" (dict "component" "loki" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.loki.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+    - name: grpc
+      port: {{ .Values.loki.service.grpcPort }}
+      targetPort: grpc
+      protocol: TCP
+  selector:
+    {{- include "observability.selectorLabels" (dict "component" "loki" "context" .) | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: loki-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "observability.componentLabels" (dict "component" "loki" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: http
+      port: {{ .Values.loki.service.httpPort }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "observability.selectorLabels" (dict "component" "loki" "context" .) | nindent 4 }}
+{{- end }}

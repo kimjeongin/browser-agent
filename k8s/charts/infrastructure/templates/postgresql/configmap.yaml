@@ -1,0 +1,21 @@
+{{- if .Values.postgresql.enabled }}
+# ConfigMap that holds the PostgreSQL initialisation SQL script.
+# Mounted at /docker-entrypoint-initdb.d/ so it runs once on first boot.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgresql-init-sql
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "postgresql" "context" .) | nindent 4 }}
+data:
+  init.sql: |
+    -- keycloak DB
+    CREATE DATABASE keycloak;
+    -- phoenix DB
+    CREATE DATABASE phoenix;
+    -- enable extensions in browser_agent DB
+    \c browser_agent;
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS vector;
+{{- end }}

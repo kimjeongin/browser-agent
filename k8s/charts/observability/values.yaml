@@ -1,0 +1,144 @@
+# ============================================================
+# Browser Agent — Observability Chart Values
+# ============================================================
+
+global:
+  namespace: browser-agent-observability
+  storageClass: standard
+
+# -----------------------------------------------------------
+# OpenTelemetry Collector
+# -----------------------------------------------------------
+otelCollector:
+  enabled: true
+  image:
+    repository: otel/opentelemetry-collector-contrib
+    tag: "0.147.0"
+    pullPolicy: IfNotPresent
+
+  service:
+    grpcPort: 4317   # OTLP gRPC receiver
+    httpPort: 4318   # OTLP HTTP receiver
+    metricsPort: 8889 # Prometheus scrape endpoint (internal)
+    healthPort: 13133
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------
+# Prometheus
+# -----------------------------------------------------------
+prometheus:
+  enabled: true
+  image:
+    repository: prom/prometheus
+    tag: v2.55.1
+    pullPolicy: IfNotPresent
+
+  retention: 15d
+
+  service:
+    port: 9090
+
+  persistence:
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------
+# Loki
+# -----------------------------------------------------------
+loki:
+  enabled: true
+  image:
+    repository: grafana/loki
+    tag: "3.3.2"
+    pullPolicy: IfNotPresent
+
+  service:
+    httpPort: 3100
+    grpcPort: 9096
+
+  persistence:
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------
+# Grafana
+# -----------------------------------------------------------
+grafana:
+  enabled: true
+  image:
+    repository: grafana/grafana
+    tag: "11.4.0"
+    pullPolicy: IfNotPresent
+
+  # Admin credentials Secret.
+  # Keys expected: admin-user, admin-password
+  auth:
+    existingSecret: grafana-secret
+
+  service:
+    port: 3000
+
+  persistence:
+    size: 2Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+
+# -----------------------------------------------------------
+# Phoenix (LLM trace visualisation)
+# -----------------------------------------------------------
+phoenix:
+  enabled: true
+  image:
+    repository: arizephoenix/phoenix
+    tag: version-13.10.0
+    pullPolicy: IfNotPresent
+
+  # Phoenix stores traces in PostgreSQL (in the infra namespace).
+  db:
+    host: postgresql.browser-agent-infra.svc.cluster.local
+    port: 5432
+    name: phoenix
+    username: postgres
+    existingSecret: postgresql-secret
+    existingSecretNamespace: browser-agent-infra
+
+  service:
+    port: 6006
+
+  persistence:
+    size: 5Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi

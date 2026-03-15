@@ -1,0 +1,75 @@
+{{- if .Values.chatAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: chat-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "chat-agent" "context" .) | nindent 4 }}
+spec:
+  {{- if not .Values.chatAgent.autoscaling.enabled }}
+  replicas: {{ .Values.chatAgent.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "browser-agent.selectorLabels" (dict "component" "chat-agent" "context" .) | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "browser-agent.componentLabels" (dict "component" "chat-agent" "context" .) | nindent 8 }}
+    spec:
+      {{- include "browser-agent.ollamaHostAlias" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: chat-agent
+          image: "{{ .Values.chatAgent.image.repository }}:{{ .Values.chatAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.chatAgent.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.chatAgent.service.port }}
+              protocol: TCP
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434"
+            - name: CHAT_MODEL
+              value: {{ .Values.chatAgent.env.chatModel | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.global.redisUrl | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.otelEndpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "chat-agent"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.chatAgent.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+{{- end }}

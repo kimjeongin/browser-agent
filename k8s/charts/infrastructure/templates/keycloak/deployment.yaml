@@ -1,0 +1,115 @@
+{{- if .Values.keycloak.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: keycloak
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "keycloak" "context" .) | nindent 4 }}
+spec:
+  replicas: {{ .Values.keycloak.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "infrastructure.selectorLabels" (dict "component" "keycloak" "context" .) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "infrastructure.componentLabels" (dict "component" "keycloak" "context" .) | nindent 8 }}
+    spec:
+      # Wait for PostgreSQL to accept connections before starting Keycloak.
+      initContainers:
+        - name: wait-for-postgresql
+          image: busybox:1.36
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -c
+            - |
+              until nc -z postgresql {{ .Values.postgresql.service.port }}; do
+                echo "waiting for postgresql..."; sleep 3;
+              done
+              echo "postgresql is ready"
+      containers:
+        - name: keycloak
+          image: "{{ .Values.keycloak.image.repository }}:{{ .Values.keycloak.image.tag }}"
+          imagePullPolicy: {{ .Values.keycloak.image.pullPolicy }}
+          # start-dev is appropriate for Minikube; swap for `start` + TLS in production.
+          args:
+            - start-dev
+            - --import-realm
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            # Keycloak 24+ management port (health endpoint lives here).
+            - name: management
+              containerPort: 9000
+              protocol: TCP
+          env:
+            # Admin credentials
+            - name: KC_BOOTSTRAP_ADMIN_USERNAME
+              value: {{ .Values.keycloak.auth.adminUser | quote }}
+            - name: KC_BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.auth.existingSecret }}
+                  key: admin-password
+            # Database
+            - name: KC_DB
+              value: postgres
+            - name: KC_DB_URL
+              value: "jdbc:postgresql://{{ .Values.keycloak.db.host }}:{{ .Values.keycloak.db.port }}/{{ .Values.keycloak.db.name }}"
+            - name: KC_DB_USERNAME
+              value: {{ .Values.keycloak.db.username | quote }}
+            - name: KC_DB_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.keycloak.db.existingSecret }}
+                  key: {{ .Values.keycloak.db.existingSecretKey }}
+            # Network / hostname
+            # KC_HOSTNAME is intentionally omitted so Keycloak uses the
+            # request's Host header (localhost:8080 via port-forward).
+            - name: KC_HOSTNAME_STRICT
+              value: "false"
+            - name: KC_HOSTNAME_STRICT_HTTPS
+              value: "false"
+            - name: KC_HTTP_ENABLED
+              value: "true"
+            - name: KC_HEALTH_ENABLED
+              value: "true"
+            - name: KC_LOG_LEVEL
+              value: "INFO"
+            - name: KC_PROXY_PROTOCOL
+              value: "none"
+          # Keycloak 24+ health endpoint is on the management port (9000).
+          livenessProbe:
+            httpGet:
+              path: /health/live
+              port: management
+            initialDelaySeconds: 90
+            periodSeconds: 15
+            timeoutSeconds: 10
+            failureThreshold: 6
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: management
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 10
+          resources:
+            {{- toYaml .Values.keycloak.resources | nindent 12 }}
+          volumeMounts:
+            {{- if .Values.keycloak.realmImportConfigMap }}
+            - name: realm-import
+              mountPath: /opt/keycloak/data/import
+              readOnly: true
+            {{- end }}
+      volumes:
+        {{- if .Values.keycloak.realmImportConfigMap }}
+        - name: realm-import
+          configMap:
+            name: {{ .Values.keycloak.realmImportConfigMap }}
+        {{- end }}
+{{- end }}

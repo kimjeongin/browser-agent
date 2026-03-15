@@ -1,0 +1,26 @@
+apiVersion: v2
+name: infrastructure
+description: >
+  Browser Agent infrastructure chart — PostgreSQL (pgvector), Redis, Keycloak, and MinIO
+  deployed as first-party Kubernetes manifests (no bitnami/other sub-chart dependencies).
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/kimjeongin/spica-browser-agent
+sources:
+  - https://github.com/kimjeongin/spica-browser-agent
+maintainers:
+  - name: kimjeongin
+    email: jeongin@spica.im
+keywords:
+  - postgresql
+  - redis
+  - keycloak
+  - minio
+  - browser-agent
+annotations:
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial infrastructure chart release
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/prerelease: "false"
