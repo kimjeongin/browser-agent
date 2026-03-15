@@ -36,3 +36,22 @@ export function clearTokens(): void {
   _accessToken = null;
   _tokenExpiry = null;
 }
+
+// ---------------------------------------------------------------------------
+// JWT payload parsing (client-side, no signature verification)
+// ---------------------------------------------------------------------------
+
+export function parseJwtPayload(token: string): Record<string, unknown> {
+  try {
+    const base64 = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+    const json = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map((c) => '%' + c.charCodeAt(0).toString(16).padStart(2, '0'))
+        .join(''),
+    );
+    return JSON.parse(json) as Record<string, unknown>;
+  } catch {
+    return {};
+  }
+}
