@@ -1,0 +1,61 @@
+# ============================================================
+# Minikube local overrides
+# ============================================================
+# Apply with: helm upgrade --install ... -f values.yaml -f values-local.yaml
+#
+# Before applying, update ollamaHostIP with your actual host gateway IP:
+#   minikube ssh "ip route | awk '/default/ {print \$3}'"
+
+global:
+  # Override with output of the command above.
+  ollamaHostIP: "192.168.49.1"
+  imagePullPolicy: Never
+
+# Scale down to single replicas for Minikube resource constraints.
+gateway:
+  replicaCount: 1
+  image:
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+orchestrator:
+  replicaCount: 1
+  image:
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+chatAgent:
+  replicaCount: 1
+  image:
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi
+
+browserAgent:
+  replicaCount: 1
+  image:
+    pullPolicy: Never
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 300m
+      memory: 256Mi

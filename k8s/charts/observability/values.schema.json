@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Browser Agent Observability Chart Values",
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "namespace":    { "type": "string" },
+        "storageClass": { "type": "string" }
+      }
+    },
+    "otelCollector": { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+    "prometheus":    { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+    "loki":          { "type": "object", "properties": { "enabled": { "type": "boolean" } } },
+    "grafana": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "auth": {
+          "type": "object",
+          "properties": {
+            "existingSecret": { "type": "string" }
+          },
+          "required": ["existingSecret"]
+        }
+      }
+    },
+    "phoenix": {
+      "type": "object",
+      "properties": {
+        "enabled": { "type": "boolean" },
+        "db": {
+          "type": "object",
+          "properties": {
+            "host":           { "type": "string" },
+            "port":           { "type": "integer" },
+            "name":           { "type": "string" },
+            "username":       { "type": "string" },
+            "existingSecret": { "type": "string" }
+          },
+          "required": ["existingSecret"]
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,18 @@
+{{- if .Values.authTester.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: auth-tester
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "auth-tester" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "browser-agent.selectorLabels" (dict "component" "auth-tester" "context" .) | nindent 4 }}
+  ports:
+    - name: http
+      port: {{ .Values.authTester.service.port }}
+      targetPort: http
+      protocol: TCP
+{{- end }}

@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft-07/schema#",
+  "title": "Browser Agent Application Chart Values",
+  "type": "object",
+  "properties": {
+    "global": {
+      "type": "object",
+      "properties": {
+        "namespace":      { "type": "string" },
+        "imageRegistry":  { "type": "string" },
+        "imagePullPolicy":{ "type": "string", "enum": ["Always","IfNotPresent","Never"] },
+        "otelEndpoint":   { "type": "string", "format": "uri" },
+        "redisUrl":       { "type": "string" },
+        "ollamaHostIP":   { "type": "string", "format": "ipv4" }
+      },
+      "required": ["ollamaHostIP"]
+    },
+    "gateway": {
+      "type": "object",
+      "properties": {
+        "enabled":      { "type": "boolean" },
+        "replicaCount": { "type": "integer", "minimum": 0 },
+        "image": {
+          "type": "object",
+          "properties": {
+            "repository":  { "type": "string" },
+            "tag":         { "type": "string" },
+            "pullPolicy":  { "type": "string", "enum": ["Always","IfNotPresent","Never"] }
+          },
+          "required": ["repository","tag"]
+        },
+        "service": {
+          "type": "object",
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
+          }
+        },
+        "resources": {
+          "type": "object",
+          "properties": {
+            "requests": { "type": "object" },
+            "limits":   { "type": "object" }
+          }
+        }
+      }
+    },
+    "orchestrator": { "type": "object" },
+    "chatAgent":    { "type": "object" },
+    "browserAgent": { "type": "object" }
+  }
+}

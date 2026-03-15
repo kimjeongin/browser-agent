@@ -1,0 +1,42 @@
+{{- if .Values.redis.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "redis" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: redis
+      protocol: TCP
+    {{- if .Values.redis.exporter.enabled }}
+    - name: metrics
+      port: 9121
+      targetPort: metrics
+      protocol: TCP
+    {{- end }}
+  selector:
+    {{- include "infrastructure.selectorLabels" (dict "component" "redis" "context" .) | nindent 4 }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis-headless
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "redis" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  clusterIP: None
+  ports:
+    - name: redis
+      port: {{ .Values.redis.service.port }}
+      targetPort: redis
+      protocol: TCP
+  selector:
+    {{- include "infrastructure.selectorLabels" (dict "component" "redis" "context" .) | nindent 4 }}
+{{- end }}

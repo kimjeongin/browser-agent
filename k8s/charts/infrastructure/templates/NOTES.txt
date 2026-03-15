@@ -1,0 +1,37 @@
+Browser Agent — Infrastructure Chart installed successfully.
+
+SERVICES
+--------
+{{- if .Values.postgresql.enabled }}
+  PostgreSQL : postgresql.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.postgresql.service.port }}
+{{- end }}
+{{- if .Values.redis.enabled }}
+  Redis      : redis.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.redis.service.port }}
+{{- end }}
+{{- if .Values.keycloak.enabled }}
+  Keycloak   : keycloak.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.keycloak.service.port }}
+{{- end }}
+{{- if .Values.minio.enabled }}
+  MinIO API  : minio.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.minio.service.apiPort }}
+  MinIO UI   : minio.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.minio.service.consolePort }}
+{{- end }}
+
+SECRETS REQUIRED (create before installing)
+-------------------------------------------
+  kubectl create secret generic postgresql-secret \
+    --from-literal=postgres-password=<PASSWORD> \
+    -n {{ .Release.Namespace }}
+
+  kubectl create secret generic keycloak-secret \
+    --from-literal=admin-password=<PASSWORD> \
+    -n {{ .Release.Namespace }}
+
+  kubectl create secret generic minio-secret \
+    --from-literal=root-user=minioadmin \
+    --from-literal=root-password=<PASSWORD> \
+    -n {{ .Release.Namespace }}
+
+VERIFY
+------
+  kubectl get pods -n {{ .Release.Namespace }}
+  kubectl get pvc   -n {{ .Release.Namespace }}

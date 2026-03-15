@@ -1,0 +1,28 @@
+apiVersion: v2
+name: observability
+description: >
+  Browser Agent observability chart — OTel Collector, Prometheus, Loki, Grafana, and Phoenix
+  deployed as first-party Kubernetes manifests.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+home: https://github.com/kimjeongin/spica-browser-agent
+sources:
+  - https://github.com/kimjeongin/spica-browser-agent
+maintainers:
+  - name: kimjeongin
+    email: jeongin@spica.im
+keywords:
+  - observability
+  - opentelemetry
+  - prometheus
+  - loki
+  - grafana
+  - phoenix
+  - browser-agent
+annotations:
+  artifacthub.io/changes: |
+    - kind: added
+      description: Initial observability chart release
+  artifacthub.io/license: Apache-2.0
+  artifacthub.io/prerelease: "false"

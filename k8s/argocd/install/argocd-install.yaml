@@ -1,0 +1,28 @@
+# ArgoCD installation for Minikube.
+# This manifest creates the argocd namespace and installs ArgoCD using the
+# official upstream install.yaml.  Apply with:
+#
+#   kubectl apply -f k8s/argocd/install/argocd-install.yaml
+#
+# For a GitOps-managed installation, the setup-minikube.sh script handles this.
+
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: argocd
+  labels:
+    app.kubernetes.io/name: argocd
+    # Do NOT inject Istio sidecars into the argocd namespace to avoid
+    # mTLS bootstrapping issues during initial cluster setup.
+    istio-injection: disabled
+---
+# The actual ArgoCD components are applied from the upstream manifest in the
+# setup script.  This file exists as a namespace anchor so ArgoCD Applications
+# can reference it before ArgoCD itself is installed via:
+#
+#   kubectl apply -n argocd -f \
+#     https://raw.githubusercontent.com/argoproj/argo-cd/stable/manifests/install.yaml
+#
+# Patch ArgoCD server to disable TLS (Minikube convenience):
+# kubectl patch configmap argocd-cmd-params-cm -n argocd \
+#   --patch '{"data":{"server.insecure":"true"}}'

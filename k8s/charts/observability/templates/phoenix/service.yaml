@@ -1,0 +1,18 @@
+{{- if .Values.phoenix.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: phoenix
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "observability.componentLabels" (dict "component" "phoenix" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.phoenix.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "observability.selectorLabels" (dict "component" "phoenix" "context" .) | nindent 4 }}
+{{- end }}

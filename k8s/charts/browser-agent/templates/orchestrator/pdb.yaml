@@ -1,0 +1,14 @@
+{{- if and .Values.orchestrator.enabled .Values.orchestrator.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: orchestrator
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "orchestrator" "context" .) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.orchestrator.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "browser-agent.selectorLabels" (dict "component" "orchestrator" "context" .) | nindent 6 }}
+{{- end }}

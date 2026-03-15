@@ -1,0 +1,58 @@
+{{- if .Values.grafana.enabled }}
+# Grafana datasources provisioning configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-datasources
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "observability.componentLabels" (dict "component" "grafana" "context" .) | nindent 4 }}
+data:
+  datasources.yaml: |
+    apiVersion: 1
+    datasources:
+      - name: Prometheus
+        uid: prometheus
+        type: prometheus
+        access: proxy
+        url: http://prometheus.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.prometheus.service.port }}
+        isDefault: true
+        jsonData:
+          timeInterval: "15s"
+
+      - name: Loki
+        uid: loki
+        type: loki
+        access: proxy
+        url: http://loki.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.loki.service.httpPort }}
+        jsonData:
+          derivedFields:
+            - name: TraceID
+              matcherRegex: '"trace_id":"([a-fA-F0-9]{32})"'
+              url: "http://phoenix.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.phoenix.service.port }}/trace/$${__value.raw}"
+              urlDisplayLabel: "View in Phoenix"
+---
+# Grafana dashboard provisioning configuration.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboards-config
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "observability.componentLabels" (dict "component" "grafana" "context" .) | nindent 4 }}
+data:
+  dashboards.yaml: |
+    apiVersion: 1
+    providers:
+      - name: 'Browser Agent'
+        orgId: 1
+        folder: 'Browser Agent'
+        folderUid: 'browser-agent-folder'
+        type: file
+        disableDeletion: false
+        updateIntervalSeconds: 30
+        allowUiUpdates: true
+        options:
+          path: /etc/grafana/provisioning/dashboards
+          foldersFromFilesStructure: false
+{{- end }}

@@ -1,0 +1,58 @@
+# ArgoCD Application — Application Services (Gateway, Orchestrator, Chat Agent, Browser Agent)
+# Sync policy: MANUAL — application deploys should be intentional and reviewed.
+# Use the ArgoCD UI or CLI to trigger syncs after image builds.
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: browser-agent-apps
+  namespace: argocd
+  labels:
+    app.kubernetes.io/part-of: browser-agent
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: browser-agent
+
+  source:
+    repoURL: "https://github.com/kimjeongin/spica-browser-agent"
+    targetRevision: main
+    path: k8s/charts/browser-agent
+    helm:
+      valueFiles:
+        - values.yaml
+        - values-local.yaml
+      releaseName: browser-agent
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: browser-agent
+
+  syncPolicy:
+    syncOptions:
+      - CreateNamespace=true
+      # Label namespace for Istio injection — applied by setup-minikube.sh.
+      - RespectIgnoreDifferences=true
+    # No automated sync for application services — manual deploy after image build.
+    # Uncomment to enable auto-sync in a CD pipeline:
+    # automated:
+    #   prune: true
+    #   selfHeal: false
+    retry:
+      limit: 3
+      backoff:
+        duration: 15s
+        factor: 2
+        maxDuration: 2m
+
+  ignoreDifferences:
+    # ArgoCD sees the rollme annotation as a diff (it is randomised at template time).
+    - group: apps
+      kind: Deployment
+      jsonPointers:
+        - /spec/template/metadata/annotations/rollme
+
+  info:
+    - name: "Description"
+      value: "Application services: Gateway, Orchestrator, Chat Agent, Browser Agent"
+    - name: "Deploy command"
+      value: "argocd app sync browser-agent-apps"

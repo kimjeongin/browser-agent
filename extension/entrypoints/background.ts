@@ -1,7 +1,7 @@
 import { config } from '@/lib/config';
 import { generateRandomString, generateCodeChallenge } from '@/lib/auth';
 import { GatewayClient } from '@/lib/api';
-import { setTokens, getAccessToken, clearTokens } from '@/lib/token-manager';
+import { setTokens, getAccessToken, clearTokens, parseJwtPayload } from '@/lib/token-manager';
 import {
   getAgentTabId,
   getAgentTabGroupId,
@@ -98,6 +98,12 @@ async function login(): Promise<{
 
     if (!tokenRes.ok) throw new Error('Token exchange failed');
     const tokens = await tokenRes.json();
+
+    // Verify status=active before proceeding
+    const payload = parseJwtPayload(tokens.access_token);
+    if (payload.status !== 'active') {
+      throw new Error('계정이 활성화되지 않았습니다. 관리자에게 문의하세요.');
+    }
 
     await setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
 
@@ -361,6 +367,12 @@ async function handleMessage(
         });
         if (!tokenRes.ok) throw new Error('Token exchange failed');
         const tokens = await tokenRes.json();
+
+        const payload = parseJwtPayload(tokens.access_token);
+        if (payload.status !== 'active') {
+          throw new Error('계정이 활성화되지 않았습니다. 관리자에게 문의하세요.');
+        }
+
         await setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
         return { success: true, data: tokens.access_token as string };
       } catch (err) {

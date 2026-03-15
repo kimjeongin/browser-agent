@@ -1,0 +1,18 @@
+{{- if .Values.chatAgent.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: chat-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "chat-agent" "context" .) | nindent 4 }}
+spec:
+  type: ClusterIP
+  ports:
+    - name: http
+      port: {{ .Values.chatAgent.service.port }}
+      targetPort: http
+      protocol: TCP
+  selector:
+    {{- include "browser-agent.selectorLabels" (dict "component" "chat-agent" "context" .) | nindent 4 }}
+{{- end }}

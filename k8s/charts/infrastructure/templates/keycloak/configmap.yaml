@@ -1,0 +1,57 @@
+{{- if .Values.keycloak.enabled }}
+{{- if .Values.keycloak.realmImportConfigMap }}
+# Keycloak realm JSON is stored in a ConfigMap and mounted into the container.
+# The realm-browser-agent.json is copied from infra/keycloak/ at chart package time.
+# Update the JSON below when realm configuration changes.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "infrastructure.componentLabels" (dict "component" "keycloak" "context" .) | nindent 4 }}
+data:
+  realm-browser-agent.json: |
+    {
+      "realm": "browser-agent",
+      "enabled": true,
+      "sslRequired": "external",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": true,
+      "editUsernameAllowed": false,
+      "bruteForceProtected": true,
+      "clients": [
+        {
+          "clientId": "browser-agent-extension",
+          "enabled": true,
+          "publicClient": true,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "redirectUris": [
+            "https://*.chromiumapp.org/*",
+            "http://localhost/*"
+          ],
+          "webOrigins": [
+            "+"
+          ],
+          "attributes": {
+            "access.token.lifespan": "3600",
+            "refresh.token.max.reuse": "0",
+            "pkce.code.challenge.method": "S256"
+          }
+        }
+      ],
+      "roles": {
+        "realm": [
+          {
+            "name": "user",
+            "description": "Standard browser-agent user"
+          }
+        ]
+      }
+    }
+{{- end }}
+{{- end }}

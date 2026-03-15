@@ -1,0 +1,84 @@
+{{- if .Values.browserAgent.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  # Service name uses "-svc" suffix to avoid collision with the chart name.
+  name: browser-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "browser-agent" "context" .) | nindent 4 }}
+spec:
+  {{- if not .Values.browserAgent.autoscaling.enabled }}
+  replicas: {{ .Values.browserAgent.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "browser-agent.selectorLabels" (dict "component" "browser-agent" "context" .) | nindent 6 }}
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        {{- include "browser-agent.componentLabels" (dict "component" "browser-agent" "context" .) | nindent 8 }}
+    spec:
+      {{- include "browser-agent.ollamaHostAlias" . | nindent 6 }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      # Longer grace period — in-flight browser tool invocations may take up to
+      # browserToolTimeout (65 s) to complete.
+      terminationGracePeriodSeconds: 90
+      containers:
+        - name: browser-agent
+          image: "{{ .Values.browserAgent.image.repository }}:{{ .Values.browserAgent.image.tag }}"
+          imagePullPolicy: {{ .Values.browserAgent.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.browserAgent.service.port }}
+              protocol: TCP
+          env:
+            - name: OLLAMA_BASE_URL
+              value: "http://host.docker.internal:11434"
+            - name: BROWSER_MODEL
+              value: {{ .Values.browserAgent.env.browserModel | quote }}
+            - name: PLANNER_MODEL
+              value: {{ .Values.browserAgent.env.plannerModel | quote }}
+            - name: GATEWAY_URL
+              value: {{ .Values.browserAgent.env.gatewayUrl | quote }}
+            - name: REDIS_URL
+              value: {{ .Values.global.redisUrl | quote }}
+            - name: BROWSER_TOOL_TIMEOUT
+              value: {{ .Values.browserAgent.env.browserToolTimeout | quote }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.global.otelEndpoint | quote }}
+            - name: OTEL_SERVICE_NAME
+              value: "browser-agent"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            timeoutSeconds: 5
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.browserAgent.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop:
+                - ALL
+{{- end }}

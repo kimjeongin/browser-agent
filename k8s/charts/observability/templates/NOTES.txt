@@ -1,0 +1,33 @@
+Browser Agent — Observability Chart installed successfully.
+
+SERVICES
+--------
+{{- if .Values.otelCollector.enabled }}
+  OTel Collector (gRPC)  : otel-collector.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.otelCollector.service.grpcPort }}
+  OTel Collector (HTTP)  : otel-collector.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.otelCollector.service.httpPort }}
+{{- end }}
+{{- if .Values.prometheus.enabled }}
+  Prometheus             : prometheus.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.prometheus.service.port }}
+{{- end }}
+{{- if .Values.loki.enabled }}
+  Loki                   : loki.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.loki.service.httpPort }}
+{{- end }}
+{{- if .Values.grafana.enabled }}
+  Grafana                : grafana.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.grafana.service.port }}
+{{- end }}
+{{- if .Values.phoenix.enabled }}
+  Phoenix                : phoenix.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.phoenix.service.port }}
+{{- end }}
+
+SECRETS REQUIRED
+----------------
+  kubectl create secret generic grafana-secret \
+    --from-literal=admin-user=admin \
+    --from-literal=admin-password=<PASSWORD> \
+    -n {{ .Release.Namespace }}
+
+ACCESS VIA PORT-FORWARD
+-----------------------
+  kubectl port-forward svc/grafana 3000:3000   -n {{ .Release.Namespace }}
+  kubectl port-forward svc/phoenix 6006:6006   -n {{ .Release.Namespace }}
+  kubectl port-forward svc/prometheus 9090:9090 -n {{ .Release.Namespace }}

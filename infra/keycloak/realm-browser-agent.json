@@ -25,6 +25,12 @@
         "pkce.code.challenge.method": "S256",
         "post.logout.redirect.uris": "+"
       },
+      "roles": [
+        {
+          "name": "active",
+          "description": "Active user — allowed to access the service"
+        }
+      ],
       "protocolMappers": [
         {
           "name": "audience-mapper",
@@ -35,6 +41,20 @@
             "included.client.audience": "browser-agent-extension",
             "id.token.claim": "false",
             "access.token.claim": "true"
+          }
+        },
+        {
+          "name": "active-claim",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-usermodel-attribute-mapper",
+          "consentRequired": false,
+          "config": {
+            "user.attribute": "active",
+            "claim.name": "active",
+            "jsonType.label": "boolean",
+            "id.token.claim": "false",
+            "access.token.claim": "true",
+            "userinfo.token.claim": "false"
           }
         }
       ],
@@ -72,7 +92,13 @@
           "value": "password",
           "temporary": false
         }
-      ]
+      ],
+      "attributes": {
+        "active": ["true"]
+      },
+      "clientRoles": {
+        "browser-agent-extension": ["active"]
+      }
     }
   ],
   "roles": {

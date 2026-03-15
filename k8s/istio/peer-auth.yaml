@@ -1,0 +1,36 @@
+# PeerAuthentication — enforces STRICT mTLS for all pods in each namespace.
+# Pods without an Istio sidecar cannot participate in mTLS; they must either
+# have the sidecar injected or be in a namespace with a PERMISSIVE policy.
+
+# Application namespace: STRICT — all pod-to-pod traffic must use mTLS.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: browser-agent
+spec:
+  mtls:
+    mode: STRICT
+---
+# Infrastructure namespace: STRICT.
+# Note: PostgreSQL and Redis do not support mTLS natively.  The Istio sidecar
+# handles mTLS termination transparently at the proxy layer, so the actual
+# database connections remain plain TCP inside the pod.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: browser-agent-infra
+spec:
+  mtls:
+    mode: STRICT
+---
+# Observability namespace: STRICT.
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: browser-agent-observability
+spec:
+  mtls:
+    mode: STRICT

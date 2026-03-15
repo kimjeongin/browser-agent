@@ -1,0 +1,90 @@
+# DestinationRules enforce mTLS between all services in the mesh.
+# Each rule pairs with the corresponding Kubernetes Service.
+# The PeerAuthentication (peer-auth.yaml) enforces STRICT mode globally;
+# these rules tell Envoy to use ISTIO_MUTUAL when connecting to each backend.
+
+# -------------------------------------------------------------------
+# Application namespace (browser-agent)
+# -------------------------------------------------------------------
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: gateway-dr
+  namespace: browser-agent
+spec:
+  host: gateway.browser-agent.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: orchestrator-dr
+  namespace: browser-agent
+spec:
+  host: orchestrator.browser-agent.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: chat-agent-dr
+  namespace: browser-agent
+spec:
+  host: chat-agent.browser-agent.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: browser-agent-svc-dr
+  namespace: browser-agent
+spec:
+  host: browser-agent-svc.browser-agent.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+
+# -------------------------------------------------------------------
+# Infrastructure namespace (browser-agent-infra)
+# mTLS is used even for infra services so app services can communicate
+# securely without leaving the mesh.
+# -------------------------------------------------------------------
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: postgresql-dr
+  namespace: browser-agent-infra
+spec:
+  host: postgresql.browser-agent-infra.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: redis-dr
+  namespace: browser-agent-infra
+spec:
+  host: redis.browser-agent-infra.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL
+---
+apiVersion: networking.istio.io/v1beta1
+kind: DestinationRule
+metadata:
+  name: keycloak-dr
+  namespace: browser-agent-infra
+spec:
+  host: keycloak.browser-agent-infra.svc.cluster.local
+  trafficPolicy:
+    tls:
+      mode: ISTIO_MUTUAL

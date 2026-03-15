@@ -1,0 +1,81 @@
+# VirtualService for the Gateway service.
+# All external traffic enters here.  SSE endpoints get a 1-hour timeout
+# so long-lived connections are not prematurely closed by Envoy.
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: gateway-vs
+  namespace: browser-agent
+spec:
+  hosts:
+    - "*"
+  gateways:
+    - browser-agent-gateway
+  http:
+    # ----------------------------------------------------------------
+    # SSE keep-alive routes — must come BEFORE the catch-all rule.
+    # These endpoints hold open long-lived HTTP/1.1 connections.
+    # ----------------------------------------------------------------
+
+    # Extension command SSE stream (Browser Agent polling for commands).
+    - name: sse-commands
+      match:
+        - uri:
+            regex: "^/sessions/[^/]+/commands$"
+      route:
+        - destination:
+            host: gateway.browser-agent.svc.cluster.local
+            port:
+              number: 8000
+      timeout: 3600s   # 1 hour
+      retries:
+        attempts: 0    # Never retry SSE streams
+
+    # Client event SSE stream (Extension receiving assistant messages).
+    - name: sse-events
+      match:
+        - uri:
+            regex: "^/sessions/[^/]+/events$"
+      route:
+        - destination:
+            host: gateway.browser-agent.svc.cluster.local
+            port:
+              number: 8000
+      timeout: 3600s
+      retries:
+        attempts: 0
+
+    # ----------------------------------------------------------------
+    # Auth tester — routes /auth-test/* to the echo server.
+    # JWT is required (enforced by AuthorizationPolicy).
+    # ----------------------------------------------------------------
+    - name: auth-tester
+      match:
+        - uri:
+            prefix: "/auth-test/"
+      rewrite:
+        uri: "/"
+      route:
+        - destination:
+            host: auth-tester.browser-agent.svc.cluster.local
+            port:
+              number: 80
+      timeout: 10s
+
+    # ----------------------------------------------------------------
+    # Standard REST routes — shorter timeout, standard retry policy.
+    # ----------------------------------------------------------------
+    - name: gateway-default
+      match:
+        - uri:
+            prefix: "/"
+      route:
+        - destination:
+            host: gateway.browser-agent.svc.cluster.local
+            port:
+              number: 8000
+      timeout: 30s
+      retries:
+        attempts: 3
+        perTryTimeout: 10s
+        retryOn: "5xx,reset,connect-failure,retriable-4xx"

@@ -1,0 +1,14 @@
+{{- if and .Values.chatAgent.enabled .Values.chatAgent.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: chat-agent
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "browser-agent.componentLabels" (dict "component" "chat-agent" "context" .) | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.chatAgent.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "browser-agent.selectorLabels" (dict "component" "chat-agent" "context" .) | nindent 6 }}
+{{- end }}

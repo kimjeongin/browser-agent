@@ -1,0 +1,84 @@
+# ArgoCD AppProject — scopes all Browser Agent applications under one project
+# with explicit source, destination, and resource allow-lists.
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: browser-agent
+  namespace: argocd
+  # Finalizer prevents accidental deletion while Applications exist.
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  description: "Browser Agent — AI multi-agent system (Minikube)"
+
+  # Source repositories allowed for this project.
+  sourceRepos:
+    - "https://github.com/kimjeongin/spica-browser-agent"
+    # Allow local cluster charts too (useful for testing).
+    - "*"
+
+  # Destination clusters and namespaces.
+  destinations:
+    - namespace: browser-agent
+      server: https://kubernetes.default.svc
+    - namespace: browser-agent-infra
+      server: https://kubernetes.default.svc
+    - namespace: browser-agent-observability
+      server: https://kubernetes.default.svc
+
+  # Kubernetes resource kinds allowed by this project.
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+    - group: "networking.istio.io"
+      kind: Gateway
+    - group: "networking.istio.io"
+      kind: VirtualService
+    - group: "networking.istio.io"
+      kind: DestinationRule
+    - group: "security.istio.io"
+      kind: PeerAuthentication
+    - group: "security.istio.io"
+      kind: RequestAuthentication
+    - group: "security.istio.io"
+      kind: AuthorizationPolicy
+
+  namespaceResourceWhitelist:
+    - group: "apps"
+      kind: Deployment
+    - group: "apps"
+      kind: StatefulSet
+    - group: ""
+      kind: Service
+    - group: ""
+      kind: ConfigMap
+    - group: ""
+      kind: Secret
+    - group: ""
+      kind: PersistentVolumeClaim
+    - group: ""
+      kind: ServiceAccount
+    - group: "autoscaling"
+      kind: HorizontalPodAutoscaler
+    - group: "policy"
+      kind: PodDisruptionBudget
+    - group: "batch"
+      kind: Job
+
+  # Sync windows — prevent accidental syncs outside working hours in production.
+  # Disabled for Minikube; uncomment for staging/prod.
+  # syncWindows:
+  #   - kind: allow
+  #     schedule: "* 8-18 * * 1-5"
+  #     duration: "10h"
+  #     applications:
+  #       - "*"
+  #     manualSync: true
+
+  roles:
+    - name: admin
+      description: "Full access to all browser-agent applications"
+      policies:
+        - p, proj:browser-agent:admin, applications, *, browser-agent/*, allow
+      groups:
+        - browser-agent-admins

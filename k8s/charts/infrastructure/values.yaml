@@ -1,0 +1,183 @@
+# ============================================================
+# Browser Agent — Infrastructure Chart Values
+# ============================================================
+# Target: Minikube (single-node) with standard StorageClass.
+# All passwords are stored in Kubernetes Secrets; set them
+# via --set or a sealed-secrets / ESO integration in prod.
+
+# -----------------------------------------------------------
+# Global settings shared across sub-components
+# -----------------------------------------------------------
+global:
+  # Kubernetes namespace (set at install time; chart does not
+  # create the namespace — ArgoCD syncOptions handles it).
+  namespace: browser-agent-infra
+  # StorageClass for all PersistentVolumeClaims.
+  storageClass: standard
+
+# -----------------------------------------------------------
+# PostgreSQL  (pgvector/pgvector:pg16)
+# -----------------------------------------------------------
+postgresql:
+  enabled: true
+  image:
+    repository: pgvector/pgvector
+    tag: pg16
+    pullPolicy: IfNotPresent
+
+  # Database configuration — passwords are stored in Secret.
+  auth:
+    # Name of the Kubernetes Secret that holds PostgreSQL credentials.
+    # Keys expected: postgres-password
+    existingSecret: postgresql-secret
+    database: browser_agent
+    username: postgres
+
+  # init.sql is mounted as a ConfigMap and executed on first boot.
+  initScript: |
+    -- keycloak DB
+    CREATE DATABASE keycloak;
+    -- phoenix DB
+    CREATE DATABASE phoenix;
+    -- browser_agent extensions
+    \c browser_agent;
+    CREATE EXTENSION IF NOT EXISTS "uuid-ossp";
+    CREATE EXTENSION IF NOT EXISTS vector;
+
+  service:
+    port: 5432
+
+  persistence:
+    size: 5Gi
+
+  resources:
+    requests:
+      cpu: 200m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+  # Postgres startup command flags
+  extraArgs:
+    - -c
+    - log_min_messages=ERROR
+    - -c
+    - log_statement=none
+    - -c
+    - log_min_duration_statement=-1
+
+# -----------------------------------------------------------
+# Redis  (redis:8-alpine)
+# -----------------------------------------------------------
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 8-alpine
+    pullPolicy: IfNotPresent
+
+  service:
+    port: 6379
+
+  persistence:
+    size: 2Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi
+
+  # redis-exporter sidecar for Prometheus metrics
+  exporter:
+    enabled: true
+    image:
+      repository: oliver006/redis_exporter
+      tag: v1.67.0
+      pullPolicy: IfNotPresent
+    resources:
+      requests:
+        cpu: 50m
+        memory: 32Mi
+      limits:
+        cpu: 100m
+        memory: 64Mi
+
+# -----------------------------------------------------------
+# Keycloak  (quay.io/keycloak/keycloak:26.5.5)
+# -----------------------------------------------------------
+keycloak:
+  enabled: false
+  image:
+    repository: quay.io/keycloak/keycloak
+    tag: "26.5.5"
+    pullPolicy: IfNotPresent
+
+  replicaCount: 1
+
+  # Keycloak admin credentials Secret.
+  # Keys expected: admin-password
+  auth:
+    existingSecret: keycloak-secret
+    adminUser: admin
+
+  # Realm JSON — mounted as ConfigMap and imported at startup.
+  # Set to "" to skip realm import.
+  realmImportConfigMap: keycloak-realm
+
+  db:
+    host: postgresql
+    port: 5432
+    name: keycloak
+    username: postgres
+    # Password read from same Secret as PostgreSQL (postgres-password key).
+    existingSecret: postgresql-secret
+    existingSecretKey: postgres-password
+
+  # Hostname seen by browsers.  In Minikube use the NodePort / LB IP.
+  # Override in values-local.yaml after `minikube ip`.
+  hostname: "http://keycloak.browser-agent.local"
+
+  service:
+    port: 8080
+
+  resources:
+    requests:
+      cpu: 300m
+      memory: 512Mi
+    limits:
+      cpu: "1"
+      memory: 1Gi
+
+# -----------------------------------------------------------
+# MinIO  (minio/minio:latest)
+# -----------------------------------------------------------
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: latest
+    pullPolicy: IfNotPresent
+
+  # MinIO credentials Secret.
+  # Keys expected: root-user, root-password
+  auth:
+    existingSecret: minio-secret
+
+  service:
+    apiPort: 9000
+    consolePort: 9001
+
+  persistence:
+    size: 10Gi
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
