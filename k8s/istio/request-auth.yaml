@@ -1,0 +1,25 @@
+# RequestAuthentication — tells Istio how to validate JWTs.
+# When a request carries a Bearer token, Istio verifies it against the
+# Keycloak JWKS endpoint.  Requests WITHOUT a token are still allowed through
+# here; the AuthorizationPolicy (authz-policy.yaml) decides which paths
+# require a valid principal.
+apiVersion: security.istio.io/v1beta1
+kind: RequestAuthentication
+metadata:
+  name: keycloak-jwt
+  # Applied to the Gateway deployment (the only service with external traffic).
+  namespace: browser-agent
+spec:
+  # No selector = applies to ALL workloads in the namespace.
+  # This is required because /auth-test/* routes to auth-tester (not gateway),
+  # so the auth-tester sidecar also needs to validate JWTs.
+  jwtRules:
+    # issuer must exactly match the `iss` claim in tokens issued by
+    # the docker-compose Keycloak (accessible on localhost:8080 from the browser).
+    - issuer: "http://localhost:8080/realms/browser-agent"
+      # jwksUri must be reachable from inside the cluster.
+      # Minikube host is accessible at 192.168.49.1 (default gateway IP).
+      jwksUri: "http://192.168.49.1:8080/realms/browser-agent/protocol/openid-connect/certs"
+      audiences:
+        - browser-agent-extension
+      forwardOriginalToken: true

@@ -318,6 +318,56 @@ async function handleMessage(
     case 'GET_ACCESS_TOKEN':
       return { success: true, data: getAccessToken() };
 
+    case 'GET_TOKEN_PKCE': {
+      // PKCE login that only fetches and stores tokens — no session creation.
+      // Used by auth-test buttons to get a real token without side effects.
+      try {
+        const verifier = generateRandomString(96);
+        const challenge = await generateCodeChallenge(verifier);
+        const state = generateRandomString(16);
+        await browser.storage.session.set({ [`pkce_${state}`]: verifier });
+
+        const authUrl = new URL(`${config.keycloakRealmUrl}/protocol/openid-connect/auth`);
+        authUrl.searchParams.set('response_type', 'code');
+        authUrl.searchParams.set('client_id', config.keycloakClientId);
+        authUrl.searchParams.set('redirect_uri', browser.identity.getRedirectURL());
+        authUrl.searchParams.set('scope', 'openid email profile');
+        authUrl.searchParams.set('state', state);
+        authUrl.searchParams.set('code_challenge', challenge);
+        authUrl.searchParams.set('code_challenge_method', 'S256');
+
+        const redirectUrl = await browser.identity.launchWebAuthFlow({ url: authUrl.toString(), interactive: true });
+        if (!redirectUrl) throw new Error('Auth flow cancelled');
+
+        const url = new URL(redirectUrl);
+        const code = url.searchParams.get('code');
+        const returnedState = url.searchParams.get('state');
+        if (!code || returnedState !== state) throw new Error('Invalid auth response');
+
+        const stored = await browser.storage.session.get(`pkce_${state}`);
+        const codeVerifier = stored[`pkce_${state}`] as string;
+        await browser.storage.session.remove(`pkce_${state}`);
+
+        const tokenRes = await fetch(`${config.keycloakRealmUrl}/protocol/openid-connect/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+          body: new URLSearchParams({
+            grant_type: 'authorization_code',
+            client_id: config.keycloakClientId,
+            code,
+            redirect_uri: browser.identity.getRedirectURL(),
+            code_verifier: codeVerifier,
+          }),
+        });
+        if (!tokenRes.ok) throw new Error('Token exchange failed');
+        const tokens = await tokenRes.json();
+        await setTokens(tokens.access_token, tokens.expires_in, tokens.refresh_token);
+        return { success: true, data: tokens.access_token as string };
+      } catch (err) {
+        return { success: false, error: (err as Error).message };
+      }
+    }
+
     case 'GET_SESSION':
       return {
         success: true,
